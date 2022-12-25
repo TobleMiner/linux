@@ -62,7 +62,7 @@ __clear_user:
 	.size	__clear_user, . - __clear_user
 
 	.section .fixup, "ax"
-	.align	1
+	.align	2
 18:	sub	r11, -4
 19:	retal	r11
 

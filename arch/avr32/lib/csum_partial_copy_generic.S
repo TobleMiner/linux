@@ -72,7 +72,7 @@ csum_partial_copy_generic:
 
 	/* Exception handler */
 	.section .fixup,"ax"
-	.align	1
+	.align	2
 fixup_ld_src:
 	mov	r9, -EFAULT
 	cp.w	r8, 0
