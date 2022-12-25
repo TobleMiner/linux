@@ -923,7 +923,7 @@ static int macb_rx_frame(struct macb *bp, unsigned int first_frag,
 		unsigned int frag_len = bp->rx_buffer_size;
 
 		if (offset + frag_len > len) {
-			BUG_ON(frag != last_frag);
+			WARN(frag != last_frag, "Fragment %u exceeds reported frame size of %u bytes, would be %u bytes", frag, len, offset + frag_len);
 			frag_len = len - offset;
 		}
 		skb_copy_to_linear_data_offset(skb, offset,
@@ -956,6 +956,7 @@ static int macb_rx(struct macb *bp, int budget)
 	int received = 0;
 	unsigned int tail;
 	int first_frag = -1;
+	unsigned int last_tail = bp->rx_tail;
 
 	for (tail = bp->rx_tail; budget > 0; tail++) {
 		struct macb_dma_desc *desc = macb_rx_desc(bp, tail);
@@ -964,8 +965,8 @@ static int macb_rx(struct macb *bp, int budget)
 		/* Make hw descriptor updates visible to CPU */
 		rmb();
 
-		addr = desc->addr;
-		ctrl = desc->ctrl;
+		addr = READ_ONCE(desc->addr);
+		ctrl = READ_ONCE(desc->ctrl);
 
 		if (!(addr & MACB_BIT(RX_USED)))
 			break;
@@ -978,10 +979,19 @@ static int macb_rx(struct macb *bp, int budget)
 
 		if (ctrl & MACB_BIT(RX_EOF)) {
 			int dropped;
-			BUG_ON(first_frag == -1);
-
-			dropped = macb_rx_frame(bp, first_frag, tail);
+			if (first_frag == -1) {
+				/*
+				 * This is fun, we have somehow missed the start of this frame.
+				 * Use end of last packet to clear out buffer up to and including this frame.
+				 */
+				WARN(true, "found last fragment without ever encountering first fragment, dropping packet!");
+				discard_partial_frame(bp, macb_rx_ring_wrap(last_tail + 1), macb_rx_ring_wrap(tail + 1));
+				dropped = 1;
+			} else {
+				dropped = macb_rx_frame(bp, first_frag, tail);
+			}
 			first_frag = -1;
+			last_tail = tail;
 			if (!dropped) {
 				received++;
 				budget--;

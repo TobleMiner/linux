@@ -469,8 +469,8 @@
  * @ctrl: Control and status bits
  */
 struct macb_dma_desc {
-	u32	addr;
-	u32	ctrl;
+	volatile u32	addr;
+	volatile u32	ctrl;
 };
 
 /* DMA descriptor bitfields */
@@ -792,7 +792,7 @@ struct macb {
 
 	unsigned int		rx_tail;
 	unsigned int		rx_prepared_head;
-	struct macb_dma_desc	*rx_ring;
+	volatile struct macb_dma_desc	*rx_ring;
 	struct sk_buff		**rx_skbuff;
 	void			*rx_buffers;
 	size_t			rx_buffer_size;
