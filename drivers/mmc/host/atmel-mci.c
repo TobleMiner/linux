@@ -41,10 +41,18 @@
 #include <linux/pinctrl/consumer.h>
 
 #include <asm/cacheflush.h>
+#include <asm-generic/delay.h>
 #include <asm/io.h>
 #include <asm/unaligned.h>
 
 #include "atmel-mci-regs.h"
+
+//#undef dev_dbg
+//#define dev_dbg dev_info
+
+#undef dev_info
+//#define dev_info(...) udelay(1000)
+#define dev_info(...) do { } while(0)
 
 #define AUTOSUSPEND_DELAY	50
 
@@ -66,6 +74,24 @@ enum atmel_mci_state {
 	STATE_SENDING_STOP,
 	STATE_END_REQUEST,
 };
+
+const char *state_names[] = {
+	"IDLE",
+	"SENDING_CMD",
+	"DATA_XFER",
+	"WAITING_NOTBUSY",
+	"SENDING_STOP",
+	"END_REQUEST",
+	"TIMEOUT"
+};
+
+static const char *state_name(enum atmel_mci_state state) {
+	if (state < ARRAY_SIZE(state_names)) {
+		return state_names[state];
+	}
+
+	return "<INVALID STATE>";
+}
 
 enum atmci_xfer_dir {
 	XFER_RECEIVE = 0,
@@ -130,15 +156,14 @@ struct atmel_mci_dma {
  *	processed.
  * @state: Tasklet state.
  * @queue: List of slots waiting for access to the controller.
- * @need_clock_update: Update the clock rate before the next request.
  * @need_reset: Reset controller before next request.
  * @timer: Timer to balance the data timeout error flag which cannot rise.
- * @mode_reg: Value of the MR register.
- * @cfg_reg: Value of the CFG register.
  * @bus_hz: The rate of @mck in Hz. This forms the basis for MMC bus
  *	rate and timeout calculations.
  * @mapbase: Physical address of the MMIO registers.
  * @mck: The peripheral bus clock hooked up to the MMC controller.
+ * @mode_reg: Value of the MR register.
+ * @cfg_reg: Value of the CFG register.
  * @pdev: Platform device associated with the MMC controller.
  * @slot: Slots sharing this MMC controller.
  * @caps: MCI capabilities depending on MCI version.
@@ -155,10 +180,6 @@ struct atmel_mci_dma {
  * @lock is a softirq-safe spinlock protecting @queue as well as
  * @cur_slot, @mrq and @state. These must always be updated
  * at the same time while holding @lock.
- *
- * @lock also protects mode_reg and need_clock_update since these are
- * used to synchronize mode register updates with the queue
- * processing.
  *
  * The @mrq field of struct atmel_mci_slot is also protected by @lock,
  * and must always be written at the same time as the slot is added to
@@ -179,6 +200,7 @@ struct atmel_mci_dma {
  */
 struct atmel_mci {
 	spinlock_t		lock;
+	spinlock_t		pio_lock;
 	void __iomem		*regs;
 
 	struct scatterlist	*sg;
@@ -198,24 +220,26 @@ struct atmel_mci {
 	struct dma_chan		*data_chan;
 	struct dma_slave_config	dma_conf;
 
-	u32			cmd_status;
-	u32			data_status;
+	volatile u32		cmd_status;
+	volatile u32		data_status;
 	u32			stop_cmdr;
 
 	struct tasklet_struct	tasklet;
-	unsigned long		pending_events;
-	unsigned long		completed_events;
+	volatile unsigned long	pending_events;
+	volatile unsigned long	completed_events;
 	enum atmel_mci_state	state;
 	struct list_head	queue;
 
-	bool			need_clock_update;
+	bool			use_single_byte_transfer;
 	bool			need_reset;
+	bool			timeout;
 	struct timer_list	timer;
-	u32			mode_reg;
-	u32			cfg_reg;
 	unsigned long		bus_hz;
 	unsigned long		mapbase;
 	struct clk		*mck;
+	u32			mode_reg;
+	u32			cfg_reg;
+	unsigned int 		real_clock;
 	struct platform_device	*pdev;
 
 	struct atmel_mci_slot	*slot[ATMCI_MAX_NR_SLOTS];
@@ -245,6 +269,11 @@ struct atmel_mci {
  *	if not available.
  * @detect_is_active_high: The state of the detect pin when it is active.
  * @detect_timer: Timer used for debouncing @detect_pin interrupts.
+ *
+ * @host->lock protects mode_reg and cfg_reg since these are
+ * used to synchronize mode register updates with the queue
+ * processing.
+ *
  */
 struct atmel_mci_slot {
 	struct mmc_host		*mmc;
@@ -257,6 +286,7 @@ struct atmel_mci_slot {
 	struct list_head	queue_node;
 
 	unsigned int		clock;
+	unsigned int		real_clock;
 	unsigned long		flags;
 #define ATMCI_CARD_PRESENT	0
 #define ATMCI_CARD_NEED_INIT	1
@@ -584,14 +614,24 @@ static inline unsigned int atmci_get_version(struct atmel_mci *host)
 	return atmci_readl(host, ATMCI_VERSION) & 0x00000fff;
 }
 
+static char fsm_trace_a[1024] = { 0 };
+static char fsm_trace_b[1024] = { 0 };
+
+static char *fsm_trace = fsm_trace_a;
+static char *last_fsm_trace = fsm_trace_b;
+
 static void atmci_timeout_timer(unsigned long data)
 {
 	struct atmel_mci *host;
 
 	host = (struct atmel_mci *)data;
 
-	dev_dbg(&host->pdev->dev, "software timeout\n");
+	dev_warn(&host->pdev->dev, "\tsoftware timeout, state: %s\n", state_name(host->state));
 
+	spin_lock_bh(&host->lock);
+	dev_warn(&host->pdev->dev, "\tFSM trace of last command (%u bytes):\n%s\n", strlen(last_fsm_trace), last_fsm_trace);
+/*
+	spin_lock(&host->pio_lock);
 	if (host->mrq->cmd->data) {
 		host->mrq->cmd->data->error = -ETIMEDOUT;
 		host->data = NULL;
@@ -600,6 +640,7 @@ static void atmci_timeout_timer(unsigned long data)
 		 * stop_transfer() is not called then the DMA request is not
 		 * removed, following ones are queued and never computed.
 		 */
+/*
 		if (host->state == STATE_DATA_XFER)
 			host->stop_transfer(host);
 	} else {
@@ -607,7 +648,11 @@ static void atmci_timeout_timer(unsigned long data)
 		host->cmd = NULL;
 	}
 	host->need_reset = 1;
-	host->state = STATE_END_REQUEST;
+	atmci_writel(host, ATMCI_IDR, ATMCI_TXRDY | ATMCI_RXRDY);
+	spin_unlock(&host->pio_lock);
+*/
+	host->timeout = true;
+	spin_unlock_bh(&host->lock);
 	smp_wmb();
 	tasklet_schedule(&host->tasklet);
 }
@@ -621,8 +666,8 @@ static inline unsigned int atmci_ns_to_clocks(struct atmel_mci *host,
 	 */
 	unsigned int us = DIV_ROUND_UP(ns, 1000);
 
-	/* Maximum clock frequency is host->bus_hz/2 */
-	return us * (DIV_ROUND_UP(host->bus_hz, 2000000));
+	return us * (DIV_ROUND_UP(host->real_clock, 1000000));
+//	return us * (DIV_ROUND_UP(host->bus_hz, 2000000));
 }
 
 static void atmci_set_timeout(struct atmel_mci *host,
@@ -729,7 +774,7 @@ static void atmci_send_stop_cmd(struct atmel_mci *host, struct mmc_data *data)
 }
 
 /*
- * Configure given PDC buffer taking care of alignement issues.
+ * Configure given PDC buffer taking care of alignment issues.
  * Update host->data_size and host->sg.
  */
 static void atmci_pdc_set_single_buf(struct atmel_mci *host,
@@ -900,6 +945,8 @@ static void atmci_dma_complete(void *arg)
 static u32 atmci_prepare_data(struct atmel_mci *host, struct mmc_data *data)
 {
 	u32 iflags;
+	u32 cmd;
+	u32 tmp;
 
 	data->error = -EINPROGRESS;
 
@@ -913,13 +960,29 @@ static u32 atmci_prepare_data(struct atmel_mci *host, struct mmc_data *data)
 	/*
 	 * Errata: MMC data write operation with less than 12
 	 * bytes is impossible.
-	 *
+	 */
+	if (data->blocks * data->blksz < 12) {
+		dev_info(&host->cur_slot->mmc->class_dev, "Short transfer, must reset controller\n");
+		host->need_reset = true;
+	}
+
+	/*
 	 * Errata: MCI Transmit Data Register (TDR) FIFO
 	 * corruption when length is not multiple of 4.
 	 */
-	if (data->blocks * data->blksz < 12
-			|| (data->blocks * data->blksz) & 3)
-		host->need_reset = true;
+	tmp = atmci_readl(host, ATMCI_MR);
+	if ((data->blocks * data->blksz) & 3) {
+		if (host->caps.need_blksz_mul_4) {
+			host->need_reset = true;
+		}
+		dev_info(&host->cur_slot->mmc->class_dev, "Using single byte transfers, len=%u\n", data->blocks * data->blksz);
+		host->use_single_byte_transfer = true;
+		tmp |= ATMCI_MR_PDCFBYTE;
+	} else {
+		host->use_single_byte_transfer = false;
+		tmp &= ~ATMCI_MR_PDCFBYTE;
+	}
+	atmci_writel(host, ATMCI_MR, tmp);
 
 	host->pio_offset = 0;
 	if (data->flags & MMC_DATA_READ)
@@ -1127,9 +1190,21 @@ static void atmci_stop_transfer_dma(struct atmel_mci *host)
 	}
 }
 
+#undef dev_info
+#define dev_info dev_warn
+
+static void fsm_trace_append(const char *state) {
+	char *pos = fsm_trace + strlen(fsm_trace);
+	strcpy(pos, state);
+	pos += strlen(state);
+	*pos++ = '\n';
+	*pos++ = '\0';
+}
+
 /*
  * Start a request: prepare data if needed, prepare the command and activate
  * interrupts.
+ * Called with host->lock held
  */
 static void atmci_start_request(struct atmel_mci *host,
 		struct atmel_mci_slot *slot)
@@ -1139,17 +1214,30 @@ static void atmci_start_request(struct atmel_mci *host,
 	struct mmc_data		*data;
 	u32			iflags;
 	u32			cmdflags;
+	unsigned long		timeout_ms;
+	char 			*tmp;
 
 	mrq = slot->mrq;
 	host->cur_slot = slot;
+	host->real_clock = slot->real_clock;
 	host->mrq = mrq;
 
 	host->pending_events = 0;
 	host->completed_events = 0;
 	host->cmd_status = 0;
 	host->data_status = 0;
+	host->state = STATE_SENDING_CMD;
 
-	dev_dbg(&host->pdev->dev, "start request: cmd %u\n", mrq->cmd->opcode);
+	tmp = last_fsm_trace;
+	last_fsm_trace = fsm_trace;
+	fsm_trace = tmp;
+
+	memset(fsm_trace, 0, sizeof(fsm_trace));
+	fsm_trace_append("SENDING CMD");
+
+//	udelay(1000);
+
+//	dev_info(&slot->mmc->class_dev, "start request: cmd %u\n", mrq->cmd->opcode);
 
 	if (host->need_reset || host->caps.need_reset_after_xfer) {
 		iflags = atmci_readl(host, ATMCI_IMR);
@@ -1161,7 +1249,13 @@ static void atmci_start_request(struct atmel_mci *host,
 			atmci_writel(host, ATMCI_CFG, host->cfg_reg);
 		atmci_writel(host, ATMCI_IER, iflags);
 		host->need_reset = false;
+		fsm_trace_append("RESET");
+	} else {
+		atmci_writel(host, ATMCI_MR, host->mode_reg);
+		if (host->caps.has_cfg_reg)
+			atmci_writel(host, ATMCI_CFG, host->cfg_reg);
 	}
+
 	atmci_writel(host, ATMCI_SDCR, slot->sdc_reg);
 
 	iflags = atmci_readl(host, ATMCI_IMR);
@@ -1175,6 +1269,9 @@ static void atmci_start_request(struct atmel_mci *host,
 		while (!(atmci_readl(host, ATMCI_SR) & ATMCI_CMDRDY))
 			cpu_relax();
 	}
+
+	atmci_readl(host, ATMCI_SR);
+
 	iflags = 0;
 	data = mrq->data;
 	if (data) {
@@ -1227,8 +1324,33 @@ static void atmci_start_request(struct atmel_mci *host,
 	 */
 	atmci_writel(host, ATMCI_IER, iflags);
 
-	mod_timer(&host->timer, jiffies +  msecs_to_jiffies(2000));
+	timeout_ms = 100;
+	timeout_ms += mrq->cmd->busy_timeout;
+	if (data) {
+		timeout_ms += DIV_ROUND_UP(data->timeout_ns, 1000000);
+		timeout_ms += DIV_ROUND_UP(data->timeout_clks * 1000, host->real_clock);
+
+		/* PIO has massive overhead, allow additional 100us per bus xfer */
+		if (host->prepare_data == &atmci_prepare_data) {
+			unsigned int num_xfers = data->blksz * data->blocks;
+
+			if (!host->use_single_byte_transfer) {
+				num_xfers /= 4;
+			}
+			timeout_ms += DIV_ROUND_UP(num_xfers, 10);
+		}
+	}
+	if (mrq->stop) {
+		timeout_ms += 10;
+		timeout_ms += mrq->stop->busy_timeout;
+	}
+//	timeout_ms = 2000;
+	host->timeout = false;
+	mod_timer(&host->timer, jiffies +  msecs_to_jiffies(timeout_ms));
 }
+
+#undef dev_info
+#define dev_info(...) do { } while (0)
 
 static void atmci_queue_request(struct atmel_mci *host,
 		struct atmel_mci_slot *slot, struct mmc_request *mrq)
@@ -1237,9 +1359,9 @@ static void atmci_queue_request(struct atmel_mci *host,
 			host->state);
 
 	spin_lock_bh(&host->lock);
+	WARN(!slot->clock, "Queuing request while clock is disabled!");
 	slot->mrq = mrq;
 	if (host->state == STATE_IDLE) {
-		host->state = STATE_SENDING_CMD;
 		atmci_start_request(host, slot);
 	} else {
 		dev_dbg(&host->pdev->dev, "queue request\n");
@@ -1254,6 +1376,14 @@ static void atmci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	struct atmel_mci	*host = slot->host;
 	struct mmc_data		*data;
 
+/*
+	if (slot != host->slot[0]) {
+//		dev_info(&host->pdev->dev, "Ignoring request on slot 1\n");
+		mrq->cmd->error = -ENOMEDIUM;
+		mmc_request_done(mmc, mrq);
+		return;
+	}
+*/
 	WARN_ON(slot->mrq);
 	dev_dbg(&host->pdev->dev, "MRQ: cmd %u\n", mrq->cmd->opcode);
 
@@ -1283,12 +1413,21 @@ static void atmci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	atmci_queue_request(host, slot, mrq);
 }
 
+static bool queue_empty_and_idle_(struct atmel_mci *host) {
+	return list_empty(&host->queue) && host->state == STATE_IDLE;
+}
+
 static void atmci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 {
 	struct atmel_mci_slot	*slot = mmc_priv(mmc);
 	struct atmel_mci	*host = slot->host;
 	unsigned int		i;
-
+/*
+	if (slot != host->slot[0]) {
+		dev_info(&host->pdev->dev, "Ignoring set_ios on slot 1\n");
+		return;
+	}
+*/
 	pm_runtime_get_sync(&host->pdev->dev);
 
 	slot->sdc_reg &= ~ATMCI_SDCBUS_MASK;
@@ -1301,16 +1440,17 @@ static void atmci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 		break;
 	}
 
+	dev_info(&mmc->class_dev, "Requesting %uHz\n", ios->clock);
+
 	if (ios->clock) {
 		unsigned int clock_min = ~0U;
 		int clkdiv;
 
 		spin_lock_bh(&host->lock);
+
+		/* host->mode_reg == 0 indicates that host was shut down */
 		if (!host->mode_reg) {
-			atmci_writel(host, ATMCI_CR, ATMCI_CR_SWRST);
-			atmci_writel(host, ATMCI_CR, ATMCI_CR_MCIEN);
-			if (host->caps.has_cfg_reg)
-				atmci_writel(host, ATMCI_CFG, host->cfg_reg);
+			host->need_reset = 1;
 		}
 
 		/*
@@ -1320,8 +1460,10 @@ static void atmci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 		slot->clock = ios->clock;
 		for (i = 0; i < ATMCI_MAX_NR_SLOTS; i++) {
 			if (host->slot[i] && host->slot[i]->clock
-					&& host->slot[i]->clock < clock_min)
+					&& host->slot[i]->clock < clock_min) {
 				clock_min = host->slot[i]->clock;
+				dev_info(&mmc->class_dev, "Clock limited to %uHz by slot %u\n", clock_min, i);
+			}
 		}
 
 		/* Calculate clock divider */
@@ -1338,6 +1480,7 @@ static void atmci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 				         clock_min, host->bus_hz / (511 + 2));
 				clkdiv = 511;
 			}
+			slot->real_clock = host->bus_hz / (clkdiv + 2);
 			host->mode_reg = ATMCI_MR_CLKDIV(clkdiv >> 1)
 			                 | ATMCI_MR_CLKODD(clkdiv & 1);
 		} else {
@@ -1348,6 +1491,7 @@ static void atmci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 				         clock_min, host->bus_hz / (2 * 256));
 				clkdiv = 255;
 			}
+			slot->real_clock = host->bus_hz / (2 * (clkdiv + 1));
 			host->mode_reg = ATMCI_MR_CLKDIV(clkdiv);
 		}
 
@@ -1367,33 +1511,31 @@ static void atmci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 				host->cfg_reg &= ~ATMCI_CFG_HSMODE;
 		}
 
-		if (list_empty(&host->queue)) {
-			atmci_writel(host, ATMCI_MR, host->mode_reg);
-			if (host->caps.has_cfg_reg)
-				atmci_writel(host, ATMCI_CFG, host->cfg_reg);
-		} else {
-			host->need_clock_update = true;
-		}
-
 		spin_unlock_bh(&host->lock);
 	} else {
 		bool any_slot_active = false;
 
 		spin_lock_bh(&host->lock);
 		slot->clock = 0;
+		slot->real_clock = 0;
 		for (i = 0; i < ATMCI_MAX_NR_SLOTS; i++) {
 			if (host->slot[i] && host->slot[i]->clock) {
 				any_slot_active = true;
 				break;
 			}
 		}
+
 		if (!any_slot_active) {
+			WARN(host->state != STATE_IDLE, "Shutting down host while request is pending!\n");
+
+			host->real_clock = 0;
 			atmci_writel(host, ATMCI_CR, ATMCI_CR_MCIDIS);
 			if (host->mode_reg) {
 				atmci_readl(host, ATMCI_MR);
 			}
 			host->mode_reg = 0;
 		}
+
 		spin_unlock_bh(&host->lock);
 	}
 
@@ -1475,6 +1617,10 @@ static const struct mmc_host_ops atmci_ops = {
 	.enable_sdio_irq = atmci_enable_sdio_irq,
 };
 
+#undef dev_info
+//#define dev_info(...) udelay(1000)
+#define dev_info(...) do { } while(0)
+
 /* Called with host->lock held */
 static void atmci_request_end(struct atmel_mci *host, struct mmc_request *mrq)
 	__releases(&host->lock)
@@ -1485,33 +1631,34 @@ static void atmci_request_end(struct atmel_mci *host, struct mmc_request *mrq)
 
 	WARN_ON(host->cmd || host->data);
 
-	/*
-	 * Update the MMC clock rate if necessary. This may be
-	 * necessary if set_ios() is called when a different slot is
-	 * busy transferring data.
-	 */
-	if (host->need_clock_update) {
-		atmci_writel(host, ATMCI_MR, host->mode_reg);
-		if (host->caps.has_cfg_reg)
-			atmci_writel(host, ATMCI_CFG, host->cfg_reg);
-	}
-
+	del_timer(&host->timer);
+	dev_info(&host->pdev->dev, "End of request\n");
 	host->cur_slot->mrq = NULL;
 	host->mrq = NULL;
+
+	u32 sr_before = atmci_readl(host, ATMCI_SR);
+	udelay(100);
+	asm volatile ("cache %0, 0x08" :: "r" (4));
+	asm volatile ("sync 0");
+	asm volatile ("cache %0, 1" :: "r" (0));
+	u32 sr_after = atmci_readl(host, ATMCI_SR);
+	if (sr_before != sr_after) {
+		dev_info(&host->pdev->dev, "SR changed! 0x%08x -> 0x%08x\n", sr_before, sr_after);
+	}
+
 	if (!list_empty(&host->queue)) {
 		slot = list_entry(host->queue.next,
 				struct atmel_mci_slot, queue_node);
 		list_del(&slot->queue_node);
 		dev_vdbg(&host->pdev->dev, "list not empty: %s is next\n",
 				mmc_hostname(slot->mmc));
-		host->state = STATE_SENDING_CMD;
+
 		atmci_start_request(host, slot);
 	} else {
 		dev_vdbg(&host->pdev->dev, "list empty\n");
+		fsm_trace_append("IDLE");
 		host->state = STATE_IDLE;
 	}
-
-	del_timer(&host->timer);
 
 	spin_unlock(&host->lock);
 	mmc_request_done(prev_mmc, mrq);
@@ -1520,6 +1667,9 @@ static void atmci_request_end(struct atmel_mci *host, struct mmc_request *mrq)
 	pm_runtime_mark_last_busy(&host->pdev->dev);
 	pm_runtime_put_autosuspend(&host->pdev->dev);
 }
+
+#undef dev_info
+#define dev_info(...) do { } while(0)
 
 static void atmci_command_complete(struct atmel_mci *host,
 			struct mmc_command *cmd)
@@ -1532,17 +1682,19 @@ static void atmci_command_complete(struct atmel_mci *host,
 	cmd->resp[2] = atmci_readl(host, ATMCI_RSPR);
 	cmd->resp[3] = atmci_readl(host, ATMCI_RSPR);
 
-	if (status & ATMCI_RTOE)
+	if (status & ATMCI_RTOE) {
 		cmd->error = -ETIMEDOUT;
-	else if ((cmd->flags & MMC_RSP_CRC) && (status & ATMCI_RCRCE))
+		fsm_trace_append("CMD TIMEOUT");
+//		udelay(1000);
+//		dev_warn(&host->pdev->dev, "Response timeout");
+	} else if ((cmd->flags & MMC_RSP_CRC) && (status & ATMCI_RCRCE))
 		cmd->error = -EILSEQ;
 	else if (status & (ATMCI_RINDE | ATMCI_RDIRE | ATMCI_RENDE))
 		cmd->error = -EIO;
-	else if (host->mrq->data && (host->mrq->data->blksz & 3)) {
-		if (host->caps.need_blksz_mul_4) {
-			cmd->error = -EINVAL;
-			host->need_reset = 1;
-		}
+	else if (host->mrq->data && (host->mrq->data->blksz & 3) &&
+		 host->caps.need_blksz_mul_4) {
+		cmd->error = -EINVAL;
+		host->need_reset = 1;
 	} else
 		cmd->error = 0;
 }
@@ -1595,10 +1747,11 @@ static void atmci_detect_change(unsigned long data)
 				 */
 				atmci_writel(host, ATMCI_CR, ATMCI_CR_SWRST);
 				atmci_writel(host, ATMCI_CR, ATMCI_CR_MCIEN);
+/*
 				atmci_writel(host, ATMCI_MR, host->mode_reg);
 				if (host->caps.has_cfg_reg)
 					atmci_writel(host, ATMCI_CFG, host->cfg_reg);
-
+*/
 				host->data = NULL;
 				host->cmd = NULL;
 
@@ -1647,14 +1800,15 @@ static void atmci_detect_change(unsigned long data)
 static void atmci_tasklet_func(unsigned long priv)
 {
 	struct atmel_mci	*host = (struct atmel_mci *)priv;
-	struct mmc_request	*mrq = host->mrq;
-	struct mmc_data		*data = host->data;
-	enum atmel_mci_state	state = host->state;
+	struct mmc_request	*mrq;
+	struct mmc_data		*data;
+	enum atmel_mci_state	state;
 	enum atmel_mci_state	prev_state;
 	u32			status;
 
 	spin_lock(&host->lock);
-
+	mrq = host->mrq;
+	data = host->data;
 	state = host->state;
 
 	dev_vdbg(&host->pdev->dev,
@@ -1662,7 +1816,9 @@ static void atmci_tasklet_func(unsigned long priv)
 		state, host->pending_events, host->completed_events,
 		atmci_readl(host, ATMCI_IMR));
 
+
 	do {
+		dev_info(&host->pdev->dev, "\ttasklet, state: %s\n", state_name(host->state));
 		prev_state = state;
 		dev_dbg(&host->pdev->dev, "FSM: state=%d\n", state);
 
@@ -1671,6 +1827,13 @@ static void atmci_tasklet_func(unsigned long priv)
 			break;
 
 		case STATE_SENDING_CMD:
+			if (host->timeout) {
+				host->mrq->cmd->error = -ETIMEDOUT;
+				host->need_reset = true;
+				state = STATE_END_REQUEST;
+				fsm_trace_append("END REQUEST (timeout)");
+				break;
+			}
 			/*
 			 * Command has been sent, we are waiting for command
 			 * ready. Then we have three next states possible:
@@ -1682,11 +1845,13 @@ static void atmci_tasklet_func(unsigned long priv)
 						EVENT_CMD_RDY))
 				break;
 
+			dev_info(&host->pdev->dev, "\tCommand sent\n");
 			dev_dbg(&host->pdev->dev, "set completed cmd ready\n");
 			host->cmd = NULL;
 			atmci_set_completed(host, EVENT_CMD_RDY);
 			atmci_command_complete(host, mrq->cmd);
 			if (mrq->data) {
+				dev_info(&host->pdev->dev, "\tSending data\n");
 				dev_dbg(&host->pdev->dev,
 				        "command with data transfer");
 				/*
@@ -1700,15 +1865,23 @@ static void atmci_tasklet_func(unsigned long priv)
 					             ATMCI_TXRDY | ATMCI_RXRDY
 					             | ATMCI_DATA_ERROR_FLAGS);
 					state = STATE_END_REQUEST;
-				} else
+					fsm_trace_append("END REQUEST");
+				} else {
 					state = STATE_DATA_XFER;
+					fsm_trace_append("DATA XFER");
+				}
 			} else if ((!mrq->data) && (mrq->cmd->flags & MMC_RSP_BUSY)) {
+				dev_info(&host->pdev->dev, "\tNo data, sync command, waiting for card not busy\n");
 				dev_dbg(&host->pdev->dev,
 				        "command response need waiting notbusy");
 				atmci_writel(host, ATMCI_IER, ATMCI_NOTBUSY);
 				state = STATE_WAITING_NOTBUSY;
-			} else
+				fsm_trace_append("WAITING NOTBUSY");
+			} else {
+				dev_info(&host->pdev->dev, "\tNo data, async command\n");
 				state = STATE_END_REQUEST;
+				fsm_trace_append("END REQUEST");
+			}
 
 			break;
 
@@ -1718,6 +1891,16 @@ static void atmci_tasklet_func(unsigned long priv)
 				dev_dbg(&host->pdev->dev, "set completed data error\n");
 				atmci_set_completed(host, EVENT_DATA_ERROR);
 				state = STATE_END_REQUEST;
+				fsm_trace_append("END REQUEST (data error)");
+				break;
+			}
+			if (host->timeout) {
+				/* SDIO DMA might not abort correctly, force stop */
+				host->stop_transfer(host);
+				host->mrq->cmd->data->error = -ETIMEDOUT;
+				host->need_reset = true;
+				state = STATE_END_REQUEST;
+				fsm_trace_append("END REQUEST (timeout)");
 				break;
 			}
 
@@ -1733,6 +1916,7 @@ static void atmci_tasklet_func(unsigned long priv)
 						EVENT_XFER_COMPLETE))
 				break;
 
+			dev_info(&host->pdev->dev, "\tData transfer complete\n");
 			dev_dbg(&host->pdev->dev,
 			        "(%s) set completed xfer complete\n",
 				__func__);
@@ -1742,15 +1926,20 @@ static void atmci_tasklet_func(unsigned long priv)
 			   (host->data->flags & MMC_DATA_WRITE)) {
 				atmci_writel(host, ATMCI_IER, ATMCI_NOTBUSY);
 				state = STATE_WAITING_NOTBUSY;
+				fsm_trace_append("WAITING NOTBUSY");
+				dev_info(&host->pdev->dev, "\tWaiting for host not busy\n");
 			} else if (host->mrq->stop) {
+				dev_info(&host->pdev->dev, "\tSending stop command\n");
 				atmci_writel(host, ATMCI_IER, ATMCI_CMDRDY);
 				atmci_send_stop_cmd(host, data);
 				state = STATE_SENDING_STOP;
+				fsm_trace_append("SENDING STOP");
 			} else {
 				host->data = NULL;
 				data->bytes_xfered = data->blocks * data->blksz;
 				data->error = 0;
 				state = STATE_END_REQUEST;
+				fsm_trace_append("END REQUEST");
 			}
 			break;
 
@@ -1761,11 +1950,24 @@ static void atmci_tasklet_func(unsigned long priv)
 			 * included) or a write operation. In the latest case,
 			 * we need to send a stop command.
 			 */
+			if (host->timeout) {
+				/*
+				 * This might not be correct, we should
+				 * really set error on the correct member,
+				 * could also be data or stop.
+				 */
+				host->mrq->cmd->error = -ETIMEDOUT;
+				host->need_reset = true;
+				state = STATE_END_REQUEST;
+				fsm_trace_append("END REQUEST (timeout)");
+				break;
+			}
 			dev_dbg(&host->pdev->dev, "FSM: not busy?\n");
 			if (!atmci_test_and_clear_pending(host,
 						EVENT_NOTBUSY))
 				break;
 
+			dev_info(&host->pdev->dev, "\tHost not busy\n");
 			dev_dbg(&host->pdev->dev, "set completed not busy\n");
 			atmci_set_completed(host, EVENT_NOTBUSY);
 
@@ -1780,15 +1982,21 @@ static void atmci_tasklet_func(unsigned long priv)
 					             ATMCI_CMDRDY);
 					atmci_send_stop_cmd(host, data);
 					state = STATE_SENDING_STOP;
+					fsm_trace_append("END REQUEST");
+					dev_info(&host->pdev->dev, "\tSending stop command\n");
 				} else {
 					host->data = NULL;
 					data->bytes_xfered = data->blocks
 					                     * data->blksz;
 					data->error = 0;
 					state = STATE_END_REQUEST;
+					fsm_trace_append("END REQUEST");
+					dev_info(&host->pdev->dev, "\tNo stop command required\n");
 				}
-			} else
+			} else {
+				dev_info(&host->pdev->dev, "\tNo stop command required\n");
 				state = STATE_END_REQUEST;
+			}
 			break;
 
 		case STATE_SENDING_STOP:
@@ -1798,25 +2006,36 @@ static void atmci_tasklet_func(unsigned long priv)
 			 * in order to go to the end request state instead of
 			 * sending stop again.
 			 */
+			if (host->timeout) {
+				host->mrq->stop->error = -ETIMEDOUT;
+				host->need_reset = true;
+				state = STATE_END_REQUEST;
+				fsm_trace_append("END REQUEST (timeout)");
+				break;
+			}
 			dev_dbg(&host->pdev->dev, "FSM: cmd ready?\n");
 			if (!atmci_test_and_clear_pending(host,
 						EVENT_CMD_RDY))
 				break;
 
+			dev_info(&host->pdev->dev, "\tStop command sent\n");
 			dev_dbg(&host->pdev->dev, "FSM: cmd ready\n");
 			host->cmd = NULL;
 			data->bytes_xfered = data->blocks * data->blksz;
 			data->error = 0;
 			atmci_command_complete(host, mrq->stop);
 			if (mrq->stop->error) {
+				dev_info(&host->pdev->dev, "\tStop command failed\n");
 				host->stop_transfer(host);
 				atmci_writel(host, ATMCI_IDR,
 				             ATMCI_TXRDY | ATMCI_RXRDY
 				             | ATMCI_DATA_ERROR_FLAGS);
 				state = STATE_END_REQUEST;
+				fsm_trace_append("END REQUEST");
 			} else {
 				atmci_writel(host, ATMCI_IER, ATMCI_NOTBUSY);
 				state = STATE_WAITING_NOTBUSY;
+				fsm_trace_append("WAITING NOTBUSY");
 			}
 			host->data = NULL;
 			break;
@@ -1824,21 +2043,28 @@ static void atmci_tasklet_func(unsigned long priv)
 		case STATE_END_REQUEST:
 			atmci_writel(host, ATMCI_IDR, ATMCI_TXRDY | ATMCI_RXRDY
 			                   | ATMCI_DATA_ERROR_FLAGS);
+			dev_info(&host->pdev->dev, "\tRequest complete\n");
+			host->cmd = NULL;
+			host->data = NULL;
 			status = host->data_status;
 			if (unlikely(status)) {
+				dev_info(&host->pdev->dev, "\tRequest completed with error\n");
 				host->stop_transfer(host);
-				host->data = NULL;
 				if (data) {
 					if (status & ATMCI_DTOE) {
+						dev_warn(&host->pdev->dev, "\tData tineout\n");
 						data->error = -ETIMEDOUT;
 					} else if (status & ATMCI_DCRCE) {
+						dev_info(&host->pdev->dev, "\tChecksum missmatch\n");
 						data->error = -EILSEQ;
 					} else {
+						dev_info(&host->pdev->dev, "\tIO Error (generic error)\n");
 						data->error = -EIO;
 					}
 				}
 			}
 
+//			udelay(1000);
 			atmci_request_end(host, host->mrq);
 			goto unlock; /* atmci_request_end() sets host->state */
 			break;
@@ -1851,7 +2077,31 @@ unlock:
 	spin_unlock(&host->lock);
 }
 
-static void atmci_read_data_pio(struct atmel_mci *host)
+/*
+static void atmci_read_data_pio_byte(struct atmel_mci *host) {
+	struct scatterlist	*sg = host->sg;
+	void			*buf = sg_virt(sg);
+	unsigned int		offset = host->pio_offset;
+	struct mmc_data		*data = host->data;
+	u32			status;
+	unsigned int		nbytes = 0;
+
+	do {
+		u32 value = atmci_readl(host, ATMCI_RDR);
+		do {
+			put_unaligned((u8)value, (u8 *)buf + offset);
+			offset++;
+			nbytes++;
+		} while (offset < sg_len);
+
+		flush_dcache_page(sg_page(sg));
+		host->sg = sg = sg_next(sg);
+		host->sg_len--;
+	} while (sg && host->sg_len);
+}
+*/
+
+static void atmci_read_data_pio_(struct atmel_mci *host)
 {
 	struct scatterlist	*sg = host->sg;
 	void			*buf = sg_virt(sg);
@@ -1919,7 +2169,64 @@ done:
 	atmci_set_pending(host, EVENT_XFER_COMPLETE);
 }
 
-static void atmci_write_data_pio(struct atmel_mci *host)
+static void atmci_read_data_pio(struct atmel_mci *host) {
+	spin_lock(&host->pio_lock);
+	atmci_read_data_pio_(host);
+	spin_unlock(&host->pio_lock);
+}
+
+static void atmci_write_data_pio_byte(struct atmel_mci *host)
+{
+	struct scatterlist	*sg = host->sg;
+	void			*buf = sg_virt(sg);
+	unsigned int		offset = host->pio_offset;
+	struct mmc_data		*data = host->data;
+	u32			status;
+	unsigned int		nbytes = 0;
+
+	/*
+	 * This should really be two loops, an inner one for each byte of
+	 * the sg and and outer one iterating over the sg's.
+	 * In case of error return from inner loop.
+	 */
+	do {
+		u32 value = get_unaligned((u8 *)buf + offset);
+		atmci_writel(host, ATMCI_TDR, value);
+		offset++;
+		nbytes++;
+
+		if (offset == sg->length) {
+			sg = sg_next(sg);
+			host->sg_len--;
+			if (sg && host->sg_len) {
+				offset = 0;
+				buf = sg_virt(sg);
+			}
+		}
+
+		status = atmci_readl(host, ATMCI_SR);
+	} while (sg && host->sg_len && (status & ATMCI_TXRDY) && !(status & ATMCI_DATA_ERROR_FLAGS));
+
+	host->sg = sg;
+	host->pio_offset = offset;
+	data->bytes_xfered += nbytes;
+
+	if (status & ATMCI_DATA_ERROR_FLAGS) {
+		atmci_writel(host, ATMCI_IDR, (ATMCI_NOTBUSY | ATMCI_TXRDY
+					| ATMCI_DATA_ERROR_FLAGS));
+		host->data_status = status;
+	} else if (!sg) {
+		atmci_writel(host, ATMCI_IDR, ATMCI_TXRDY);
+		atmci_writel(host, ATMCI_IER, ATMCI_NOTBUSY);
+		smp_wmb();
+		atmci_set_pending(host, EVENT_XFER_COMPLETE);
+	}
+
+	return;
+}
+
+
+static void atmci_write_data_pio_word(struct atmel_mci *host)
 {
 	struct scatterlist	*sg = host->sg;
 	void			*buf = sg_virt(sg);
@@ -1989,6 +2296,17 @@ done:
 	atmci_set_pending(host, EVENT_XFER_COMPLETE);
 }
 
+static void atmci_write_data_pio(struct atmel_mci *host)
+{
+	spin_lock(&host->pio_lock);
+	if (host->use_single_byte_transfer) {
+		atmci_write_data_pio_byte(host);
+	} else {
+		atmci_write_data_pio_word(host);
+	}
+	spin_unlock(&host->pio_lock);
+}
+
 static void atmci_sdio_interrupt(struct atmel_mci *host, u32 status)
 {
 	int	i;
@@ -2008,6 +2326,7 @@ static irqreturn_t atmci_interrupt(int irq, void *dev_id)
 	u32			status, mask, pending;
 	unsigned int		pass_count = 0;
 
+	spin_lock(&host->lock);
 	do {
 		status = atmci_readl(host, ATMCI_SR);
 		mask = atmci_readl(host, ATMCI_IMR);
@@ -2016,7 +2335,7 @@ static irqreturn_t atmci_interrupt(int irq, void *dev_id)
 			break;
 
 		if (pending & ATMCI_DATA_ERROR_FLAGS) {
-			dev_dbg(&host->pdev->dev, "IRQ: data error\n");
+			dev_info(&host->pdev->dev, "IRQ: data error\n");
 			atmci_writel(host, ATMCI_IDR, ATMCI_DATA_ERROR_FLAGS
 					| ATMCI_RXRDY | ATMCI_TXRDY
 					| ATMCI_ENDRX | ATMCI_ENDTX
@@ -2030,7 +2349,7 @@ static irqreturn_t atmci_interrupt(int irq, void *dev_id)
 		}
 
 		if (pending & ATMCI_TXBUFE) {
-			dev_dbg(&host->pdev->dev, "IRQ: tx buffer empty\n");
+			dev_info(&host->pdev->dev, "IRQ: tx buffer empty\n");
 			atmci_writel(host, ATMCI_IDR, ATMCI_TXBUFE);
 			atmci_writel(host, ATMCI_IDR, ATMCI_ENDTX);
 			/*
@@ -2046,7 +2365,7 @@ static irqreturn_t atmci_interrupt(int irq, void *dev_id)
 				atmci_pdc_complete(host);
 			}
 		} else if (pending & ATMCI_ENDTX) {
-			dev_dbg(&host->pdev->dev, "IRQ: end of tx buffer\n");
+			dev_info(&host->pdev->dev, "IRQ: end of tx buffer\n");
 			atmci_writel(host, ATMCI_IDR, ATMCI_ENDTX);
 
 			if (host->data_size) {
@@ -2057,7 +2376,7 @@ static irqreturn_t atmci_interrupt(int irq, void *dev_id)
 		}
 
 		if (pending & ATMCI_RXBUFF) {
-			dev_dbg(&host->pdev->dev, "IRQ: rx buffer full\n");
+			dev_info(&host->pdev->dev, "IRQ: rx buffer full\n");
 			atmci_writel(host, ATMCI_IDR, ATMCI_RXBUFF);
 			atmci_writel(host, ATMCI_IDR, ATMCI_ENDRX);
 			/*
@@ -2073,7 +2392,7 @@ static irqreturn_t atmci_interrupt(int irq, void *dev_id)
 				atmci_pdc_complete(host);
 			}
 		} else if (pending & ATMCI_ENDRX) {
-			dev_dbg(&host->pdev->dev, "IRQ: end of rx buffer\n");
+			dev_info(&host->pdev->dev, "IRQ: end of rx buffer\n");
 			atmci_writel(host, ATMCI_IDR, ATMCI_ENDRX);
 
 			if (host->data_size) {
@@ -2107,11 +2426,12 @@ static irqreturn_t atmci_interrupt(int irq, void *dev_id)
 			tasklet_schedule(&host->tasklet);
 		}
 
-		if (pending & ATMCI_RXRDY)
+		if (pending & ATMCI_RXRDY) {
 			atmci_read_data_pio(host);
-		if (pending & ATMCI_TXRDY)
+		}
+		if (pending & ATMCI_TXRDY) {
 			atmci_write_data_pio(host);
-
+		}
 		if (pending & ATMCI_CMDRDY) {
 			dev_dbg(&host->pdev->dev, "IRQ: cmd ready\n");
 			atmci_writel(host, ATMCI_IDR, ATMCI_CMDRDY);
@@ -2126,6 +2446,7 @@ static irqreturn_t atmci_interrupt(int irq, void *dev_id)
 			atmci_sdio_interrupt(host, status);
 
 	} while (pass_count++ < 5);
+	spin_unlock(&host->lock);
 
 	return pass_count ? IRQ_HANDLED : IRQ_NONE;
 }
@@ -2175,6 +2496,8 @@ static int atmci_init_slot(struct atmel_mci *host,
 	mmc->ops = &atmci_ops;
 	mmc->f_min = DIV_ROUND_UP(host->bus_hz, 512);
 	mmc->f_max = host->bus_hz / 2;
+	if (mmc->f_max > 1000000 && mmc->f_min <= 1000000)
+		mmc->f_max = 1000000;
 	mmc->ocr_avail	= MMC_VDD_32_33 | MMC_VDD_33_34;
 	if (sdio_irq)
 		mmc->caps |= MMC_CAP_SDIO_IRQ;
@@ -2383,6 +2706,7 @@ static int atmci_probe(struct platform_device *pdev)
 
 	host->pdev = pdev;
 	spin_lock_init(&host->lock);
+	spin_lock_init(&host->pio_lock);
 	INIT_LIST_HEAD(&host->queue);
 
 	host->mck = devm_clk_get(&pdev->dev, "mci_clk");
@@ -2398,6 +2722,7 @@ static int atmci_probe(struct platform_device *pdev)
 		return ret;
 
 	atmci_writel(host, ATMCI_CR, ATMCI_CR_SWRST);
+	atmci_writel(host, ATMCI_CR, ATMCI_CR_MCIEN);
 	host->bus_hz = clk_get_rate(host->mck);
 
 	host->mapbase = regs->start;
@@ -2412,6 +2737,18 @@ static int atmci_probe(struct platform_device *pdev)
 
 	/* Get MCI capabilities and set operations according to it */
 	atmci_get_cap(host);
+	/*
+	 * We can not safely enable HS timings when there are multiple
+	 * devices on the same bus. Separate ios calls for both slots
+	 * would have to be issued, first negotiating hs timings and then
+	 * up-ing the clocks. This would require the mmc framework to be
+	 * aware of our bus topology which it isn't. Just disable HS mode
+	 * when we are using both slots.
+	 */
+	if (pdata->slot[0].bus_width && pdata->slot[1].bus_width) {
+		host->caps.has_highspeed = 0;
+	}
+
 	ret = atmci_configure_dma(host);
 	if (ret == -EPROBE_DEFER)
 		goto err_dma_probe_defer;
@@ -2546,9 +2883,9 @@ static int atmci_runtime_suspend(struct device *dev)
 {
 	struct atmel_mci *host = dev_get_drvdata(dev);
 
-	clk_disable_unprepare(host->mck);
+//	clk_disable_unprepare(host->mck);
 
-	pinctrl_pm_select_sleep_state(dev);
+//	pinctrl_pm_select_sleep_state(dev);
 
 	return 0;
 }
@@ -2557,9 +2894,10 @@ static int atmci_runtime_resume(struct device *dev)
 {
 	struct atmel_mci *host = dev_get_drvdata(dev);
 
-	pinctrl_pm_select_default_state(dev);
+//	pinctrl_pm_select_default_state(dev);
 
-	return clk_prepare_enable(host->mck);
+//	return clk_prepare_enable(host->mck);
+	return 0;
 }
 #endif
 
