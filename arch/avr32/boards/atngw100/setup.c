@@ -15,6 +15,7 @@
 #include <linux/i2c-gpio.h>
 #include <linux/init.h>
 #include <linux/linkage.h>
+#include <linux/platform_data/brcmfmac-sdio.h>
 #include <linux/platform_device.h>
 #include <linux/types.h>
 #include <linux/leds.h>
@@ -131,6 +132,23 @@ static struct mci_platform_data __initdata mci0_data = {
 		.wp_pin		= GPIO_PIN_PE(0),
 #endif
 	},
+	.slot[1] = {
+		.bus_width = 1,
+		.detect_pin = -1,
+		.wp_pin = -1,
+	}
+};
+
+static struct brcmfmac_sdio_platform_data brcmfmac_sdio_pdata = {
+	.power_on		= NULL,
+	.power_off		= NULL,
+	.reset			= NULL,
+};
+
+static struct platform_device brcmfmac_device = {
+        .name                   = BRCMFMAC_SDIO_PDATA_NAME,
+        .id                     = PLATFORM_DEVID_NONE,
+        .dev.platform_data      = &brcmfmac_sdio_pdata,
 };
 
 static struct usba_platform_data atngw100_usba_data __initdata = {
@@ -292,6 +310,8 @@ static int __init atngw100_init(void)
 		AT32_GPIOF_MULTIDRV | AT32_GPIOF_OUTPUT | AT32_GPIOF_HIGH);
 	platform_device_register(&i2c_gpio_device);
 	i2c_register_board_info(0, i2c_info, ARRAY_SIZE(i2c_info));
+
+	platform_device_register(&brcmfmac_device);
 
 	return 0;
 }
