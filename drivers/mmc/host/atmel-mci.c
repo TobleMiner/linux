@@ -47,13 +47,6 @@
 
 #include "atmel-mci-regs.h"
 
-//#undef dev_dbg
-//#define dev_dbg dev_info
-
-#undef dev_info
-//#define dev_info(...) udelay(1000)
-#define dev_info(...) do { } while(0)
-
 #define AUTOSUSPEND_DELAY	50
 
 #define ATMCI_DATA_ERROR_FLAGS	(ATMCI_DCRCE | ATMCI_DTOE | ATMCI_OVRE | ATMCI_UNRE)
@@ -614,43 +607,13 @@ static inline unsigned int atmci_get_version(struct atmel_mci *host)
 	return atmci_readl(host, ATMCI_VERSION) & 0x00000fff;
 }
 
-static char fsm_trace_a[1024] = { 0 };
-static char fsm_trace_b[1024] = { 0 };
-
-static char *fsm_trace = fsm_trace_a;
-static char *last_fsm_trace = fsm_trace_b;
-
 static void atmci_timeout_timer(unsigned long data)
 {
 	struct atmel_mci *host;
 
 	host = (struct atmel_mci *)data;
 
-//	dev_warn(&host->pdev->dev, "\tsoftware timeout, state: %s\n", state_name(host->state));
-
 	spin_lock_bh(&host->lock);
-//	dev_warn(&host->pdev->dev, "\tFSM trace of last command (%u bytes):\n%s\n", strlen(last_fsm_trace), last_fsm_trace);
-/*
-	spin_lock(&host->pio_lock);
-	if (host->mrq->cmd->data) {
-		host->mrq->cmd->data->error = -ETIMEDOUT;
-		host->data = NULL;
-		/*
-		 * With some SDIO modules, sometimes DMA transfer hangs. If
-		 * stop_transfer() is not called then the DMA request is not
-		 * removed, following ones are queued and never computed.
-		 */
-/*
-		if (host->state == STATE_DATA_XFER)
-			host->stop_transfer(host);
-	} else {
-		host->mrq->cmd->error = -ETIMEDOUT;
-		host->cmd = NULL;
-	}
-	host->need_reset = 1;
-	atmci_writel(host, ATMCI_IDR, ATMCI_TXRDY | ATMCI_RXRDY);
-	spin_unlock(&host->pio_lock);
-*/
 	host->timeout = true;
 	spin_unlock_bh(&host->lock);
 	smp_wmb();
@@ -667,7 +630,6 @@ static inline unsigned int atmci_ns_to_clocks(struct atmel_mci *host,
 	unsigned int us = DIV_ROUND_UP(ns, 1000);
 
 	return us * (DIV_ROUND_UP(host->real_clock, 1000000));
-//	return us * (DIV_ROUND_UP(host->bus_hz, 2000000));
 }
 
 static void atmci_set_timeout(struct atmel_mci *host,
@@ -962,7 +924,7 @@ static u32 atmci_prepare_data(struct atmel_mci *host, struct mmc_data *data)
 	 * bytes is impossible.
 	 */
 	if (data->blocks * data->blksz < 12) {
-		dev_info(&host->cur_slot->mmc->class_dev, "Short transfer, must reset controller\n");
+		dev_dbg(&host->cur_slot->mmc->class_dev, "Short transfer, must reset controller\n");
 		host->need_reset = true;
 	}
 
@@ -975,7 +937,7 @@ static u32 atmci_prepare_data(struct atmel_mci *host, struct mmc_data *data)
 		if (host->caps.need_blksz_mul_4) {
 			host->need_reset = true;
 		}
-		dev_info(&host->cur_slot->mmc->class_dev, "Using single byte transfers, len=%u\n", data->blocks * data->blksz);
+		dev_dbg(&host->cur_slot->mmc->class_dev, "Using single byte transfers, len=%u\n", data->blocks * data->blksz);
 		host->use_single_byte_transfer = true;
 		tmp |= ATMCI_MR_PDCFBYTE;
 	} else {
@@ -1190,17 +1152,6 @@ static void atmci_stop_transfer_dma(struct atmel_mci *host)
 	}
 }
 
-#undef dev_info
-#define dev_info dev_warn
-
-static void fsm_trace_append(const char *state) {
-	char *pos = fsm_trace + strlen(fsm_trace);
-	strcpy(pos, state);
-	pos += strlen(state);
-	*pos++ = '\n';
-	*pos++ = '\0';
-}
-
 /*
  * Start a request: prepare data if needed, prepare the command and activate
  * interrupts.
@@ -1215,7 +1166,6 @@ static void atmci_start_request(struct atmel_mci *host,
 	u32			iflags;
 	u32			cmdflags;
 	unsigned long		timeout_ms;
-	char 			*tmp;
 
 	mrq = slot->mrq;
 	host->cur_slot = slot;
@@ -1228,17 +1178,6 @@ static void atmci_start_request(struct atmel_mci *host,
 	host->data_status = 0;
 	host->state = STATE_SENDING_CMD;
 
-	tmp = last_fsm_trace;
-	last_fsm_trace = fsm_trace;
-	fsm_trace = tmp;
-
-	memset(fsm_trace, 0, sizeof(fsm_trace));
-	fsm_trace_append("SENDING CMD");
-
-//	udelay(1000);
-
-//	dev_info(&slot->mmc->class_dev, "start request: cmd %u\n", mrq->cmd->opcode);
-
 	if (host->need_reset || host->caps.need_reset_after_xfer) {
 		iflags = atmci_readl(host, ATMCI_IMR);
 		iflags &= (ATMCI_SDIOIRQA | ATMCI_SDIOIRQB);
@@ -1249,7 +1188,6 @@ static void atmci_start_request(struct atmel_mci *host,
 			atmci_writel(host, ATMCI_CFG, host->cfg_reg);
 		atmci_writel(host, ATMCI_IER, iflags);
 		host->need_reset = false;
-		fsm_trace_append("RESET");
 	} else {
 		atmci_writel(host, ATMCI_MR, host->mode_reg);
 		if (host->caps.has_cfg_reg)
@@ -1344,13 +1282,9 @@ static void atmci_start_request(struct atmel_mci *host,
 		timeout_ms += 10;
 		timeout_ms += mrq->stop->busy_timeout;
 	}
-//	timeout_ms = 2000;
 	host->timeout = false;
 	mod_timer(&host->timer, jiffies +  msecs_to_jiffies(timeout_ms));
 }
-
-#undef dev_info
-#define dev_info(...) do { } while (0)
 
 static void atmci_queue_request(struct atmel_mci *host,
 		struct atmel_mci_slot *slot, struct mmc_request *mrq)
@@ -1376,24 +1310,7 @@ static void atmci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	struct atmel_mci	*host = slot->host;
 	struct mmc_data		*data;
 
-/*
-	if (slot != host->slot[0]) {
-//		dev_info(&host->pdev->dev, "Ignoring request on slot 1\n");
-		mrq->cmd->error = -ENOMEDIUM;
-		mmc_request_done(mmc, mrq);
-		return;
-	}
-*/
 	WARN_ON(slot->mrq);
-	if (slot == host->slot[1]) {
-		dev_warn(&host->pdev->dev, "MRQ: cmd %u\n", mrq->cmd->opcode);
-		if (mrq->data) {
-			dev_warn(&host->pdev->dev, "    data: %u byte\n", mrq->data->blksz * mrq->data->blocks);
-		}
-		if (mrq->stop) {
-			dev_warn(&host->pdev->dev, "    stop: cmd %u\n", mrq->stop->opcode);
-		}
-	}
 
 	pm_runtime_get_sync(&host->pdev->dev);
 
@@ -1430,12 +1347,7 @@ static void atmci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 	struct atmel_mci_slot	*slot = mmc_priv(mmc);
 	struct atmel_mci	*host = slot->host;
 	unsigned int		i;
-/*
-	if (slot != host->slot[0]) {
-		dev_info(&host->pdev->dev, "Ignoring set_ios on slot 1\n");
-		return;
-	}
-*/
+
 	pm_runtime_get_sync(&host->pdev->dev);
 
 	slot->sdc_reg &= ~ATMCI_SDCBUS_MASK;
@@ -1447,8 +1359,6 @@ static void atmci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 		slot->sdc_reg |= ATMCI_SDCBUS_4BIT;
 		break;
 	}
-
-	dev_info(&mmc->class_dev, "Requesting %uHz\n", ios->clock);
 
 	if (ios->clock) {
 		unsigned int clock_min = ~0U;
@@ -1470,7 +1380,6 @@ static void atmci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 			if (host->slot[i] && host->slot[i]->clock
 					&& host->slot[i]->clock < clock_min) {
 				clock_min = host->slot[i]->clock;
-				dev_info(&mmc->class_dev, "Clock limited to %uHz by slot %u\n", clock_min, i);
 			}
 		}
 
@@ -1625,10 +1534,6 @@ static const struct mmc_host_ops atmci_ops = {
 	.enable_sdio_irq = atmci_enable_sdio_irq,
 };
 
-#undef dev_info
-//#define dev_info(...) udelay(1000)
-#define dev_info(...) do { } while(0)
-
 /* Called with host->lock held */
 static void atmci_request_end(struct atmel_mci *host, struct mmc_request *mrq)
 	__releases(&host->lock)
@@ -1640,19 +1545,8 @@ static void atmci_request_end(struct atmel_mci *host, struct mmc_request *mrq)
 	WARN_ON(host->cmd || host->data);
 
 	del_timer(&host->timer);
-	dev_info(&host->pdev->dev, "End of request\n");
 	host->cur_slot->mrq = NULL;
 	host->mrq = NULL;
-
-	u32 sr_before = atmci_readl(host, ATMCI_SR);
-//	udelay(100);
-	asm volatile ("cache %0, 0x08" :: "r" (4));
-	asm volatile ("sync 0");
-	asm volatile ("cache %0, 1" :: "r" (0));
-	u32 sr_after = atmci_readl(host, ATMCI_SR);
-	if (sr_before != sr_after) {
-		dev_info(&host->pdev->dev, "SR changed! 0x%08x -> 0x%08x\n", sr_before, sr_after);
-	}
 
 	if (!list_empty(&host->queue)) {
 		slot = list_entry(host->queue.next,
@@ -1664,7 +1558,6 @@ static void atmci_request_end(struct atmel_mci *host, struct mmc_request *mrq)
 		atmci_start_request(host, slot);
 	} else {
 		dev_vdbg(&host->pdev->dev, "list empty\n");
-		fsm_trace_append("IDLE");
 		host->state = STATE_IDLE;
 	}
 
@@ -1675,9 +1568,6 @@ static void atmci_request_end(struct atmel_mci *host, struct mmc_request *mrq)
 	pm_runtime_mark_last_busy(&host->pdev->dev);
 	pm_runtime_put_autosuspend(&host->pdev->dev);
 }
-
-#undef dev_info
-#define dev_info(...) do { } while(0)
 
 static void atmci_command_complete(struct atmel_mci *host,
 			struct mmc_command *cmd)
@@ -1692,9 +1582,6 @@ static void atmci_command_complete(struct atmel_mci *host,
 
 	if (status & ATMCI_RTOE) {
 		cmd->error = -ETIMEDOUT;
-		fsm_trace_append("CMD TIMEOUT");
-//		udelay(1000);
-//		dev_warn(&host->pdev->dev, "Response timeout");
 	} else if ((cmd->flags & MMC_RSP_CRC) && (status & ATMCI_RCRCE))
 		cmd->error = -EILSEQ;
 	else if (status & (ATMCI_RINDE | ATMCI_RDIRE | ATMCI_RENDE))
@@ -1826,7 +1713,6 @@ static void atmci_tasklet_func(unsigned long priv)
 
 
 	do {
-		dev_info(&host->pdev->dev, "\ttasklet, state: %s\n", state_name(host->state));
 		prev_state = state;
 		dev_dbg(&host->pdev->dev, "FSM: state=%d\n", state);
 
@@ -1839,7 +1725,6 @@ static void atmci_tasklet_func(unsigned long priv)
 				host->mrq->cmd->error = -ETIMEDOUT;
 				host->need_reset = true;
 				state = STATE_END_REQUEST;
-				fsm_trace_append("END REQUEST (timeout)");
 				break;
 			}
 			/*
@@ -1853,13 +1738,11 @@ static void atmci_tasklet_func(unsigned long priv)
 						EVENT_CMD_RDY))
 				break;
 
-			dev_info(&host->pdev->dev, "\tCommand sent\n");
 			dev_dbg(&host->pdev->dev, "set completed cmd ready\n");
 			host->cmd = NULL;
 			atmci_set_completed(host, EVENT_CMD_RDY);
 			atmci_command_complete(host, mrq->cmd);
 			if (mrq->data) {
-				dev_info(&host->pdev->dev, "\tSending data\n");
 				dev_dbg(&host->pdev->dev,
 				        "command with data transfer");
 				/*
@@ -1873,22 +1756,16 @@ static void atmci_tasklet_func(unsigned long priv)
 					             ATMCI_TXRDY | ATMCI_RXRDY
 					             | ATMCI_DATA_ERROR_FLAGS);
 					state = STATE_END_REQUEST;
-					fsm_trace_append("END REQUEST");
 				} else {
 					state = STATE_DATA_XFER;
-					fsm_trace_append("DATA XFER");
 				}
 			} else if ((!mrq->data) && (mrq->cmd->flags & MMC_RSP_BUSY)) {
-				dev_info(&host->pdev->dev, "\tNo data, sync command, waiting for card not busy\n");
 				dev_dbg(&host->pdev->dev,
 				        "command response need waiting notbusy");
 				atmci_writel(host, ATMCI_IER, ATMCI_NOTBUSY);
 				state = STATE_WAITING_NOTBUSY;
-				fsm_trace_append("WAITING NOTBUSY");
 			} else {
-				dev_info(&host->pdev->dev, "\tNo data, async command\n");
 				state = STATE_END_REQUEST;
-				fsm_trace_append("END REQUEST");
 			}
 
 			break;
@@ -1899,7 +1776,6 @@ static void atmci_tasklet_func(unsigned long priv)
 				dev_dbg(&host->pdev->dev, "set completed data error\n");
 				atmci_set_completed(host, EVENT_DATA_ERROR);
 				state = STATE_END_REQUEST;
-				fsm_trace_append("END REQUEST (data error)");
 				break;
 			}
 			if (host->timeout) {
@@ -1908,7 +1784,6 @@ static void atmci_tasklet_func(unsigned long priv)
 				host->mrq->cmd->data->error = -ETIMEDOUT;
 				host->need_reset = true;
 				state = STATE_END_REQUEST;
-				fsm_trace_append("END REQUEST (timeout)");
 				break;
 			}
 
@@ -1924,7 +1799,6 @@ static void atmci_tasklet_func(unsigned long priv)
 						EVENT_XFER_COMPLETE))
 				break;
 
-			dev_info(&host->pdev->dev, "\tData transfer complete\n");
 			dev_dbg(&host->pdev->dev,
 			        "(%s) set completed xfer complete\n",
 				__func__);
@@ -1934,20 +1808,15 @@ static void atmci_tasklet_func(unsigned long priv)
 			   (host->data->flags & MMC_DATA_WRITE)) {
 				atmci_writel(host, ATMCI_IER, ATMCI_NOTBUSY);
 				state = STATE_WAITING_NOTBUSY;
-				fsm_trace_append("WAITING NOTBUSY");
-				dev_info(&host->pdev->dev, "\tWaiting for host not busy\n");
 			} else if (host->mrq->stop) {
-				dev_info(&host->pdev->dev, "\tSending stop command\n");
 				atmci_test_and_clear_pending(host, EVENT_CMD_RDY);
 				atmci_send_stop_cmd(host, data);
 				state = STATE_SENDING_STOP;
-				fsm_trace_append("SENDING STOP");
 			} else {
 				host->data = NULL;
 				data->bytes_xfered = data->blocks * data->blksz;
 				data->error = 0;
 				state = STATE_END_REQUEST;
-				fsm_trace_append("END REQUEST");
 			}
 			break;
 
@@ -1967,7 +1836,6 @@ static void atmci_tasklet_func(unsigned long priv)
 				host->mrq->cmd->error = -ETIMEDOUT;
 				host->need_reset = true;
 				state = STATE_END_REQUEST;
-				fsm_trace_append("END REQUEST (timeout)");
 				break;
 			}
 			dev_dbg(&host->pdev->dev, "FSM: not busy?\n");
@@ -1975,7 +1843,6 @@ static void atmci_tasklet_func(unsigned long priv)
 						EVENT_NOTBUSY))
 				break;
 
-			dev_info(&host->pdev->dev, "\tHost not busy\n");
 			dev_dbg(&host->pdev->dev, "set completed not busy\n");
 			atmci_set_completed(host, EVENT_NOTBUSY);
 
@@ -1989,19 +1856,14 @@ static void atmci_tasklet_func(unsigned long priv)
 					atmci_test_and_clear_pending(host, EVENT_CMD_RDY);
 					atmci_send_stop_cmd(host, data);
 					state = STATE_SENDING_STOP;
-					fsm_trace_append("END REQUEST");
-					dev_info(&host->pdev->dev, "\tSending stop command\n");
 				} else {
 					host->data = NULL;
 					data->bytes_xfered = data->blocks
 					                     * data->blksz;
 					data->error = 0;
 					state = STATE_END_REQUEST;
-					fsm_trace_append("END REQUEST");
-					dev_info(&host->pdev->dev, "\tNo stop command required\n");
 				}
 			} else {
-				dev_info(&host->pdev->dev, "\tNo stop command required\n");
 				state = STATE_END_REQUEST;
 			}
 			break;
@@ -2017,7 +1879,6 @@ static void atmci_tasklet_func(unsigned long priv)
 				host->mrq->stop->error = -ETIMEDOUT;
 				host->need_reset = true;
 				state = STATE_END_REQUEST;
-				fsm_trace_append("END REQUEST (timeout)");
 				break;
 			}
 			dev_dbg(&host->pdev->dev, "FSM: cmd ready?\n");
@@ -2025,24 +1886,20 @@ static void atmci_tasklet_func(unsigned long priv)
 						EVENT_CMD_RDY))
 				break;
 
-			dev_info(&host->pdev->dev, "\tStop command sent\n");
 			dev_dbg(&host->pdev->dev, "FSM: cmd ready\n");
 			host->cmd = NULL;
 			data->bytes_xfered = data->blocks * data->blksz;
 			data->error = 0;
 			atmci_command_complete(host, mrq->stop);
 			if (mrq->stop->error) {
-				dev_info(&host->pdev->dev, "\tStop command failed\n");
 				host->stop_transfer(host);
 				atmci_writel(host, ATMCI_IDR,
 				             ATMCI_TXRDY | ATMCI_RXRDY
 				             | ATMCI_DATA_ERROR_FLAGS);
 				state = STATE_END_REQUEST;
-				fsm_trace_append("END REQUEST");
 			} else {
 				atmci_writel(host, ATMCI_IER, ATMCI_NOTBUSY);
 				state = STATE_WAITING_NOTBUSY;
-				fsm_trace_append("WAITING NOTBUSY");
 			}
 			host->data = NULL;
 			break;
@@ -2050,29 +1907,23 @@ static void atmci_tasklet_func(unsigned long priv)
 		case STATE_END_REQUEST:
 			atmci_writel(host, ATMCI_IDR, ATMCI_TXRDY | ATMCI_RXRDY
 			                   | ATMCI_DATA_ERROR_FLAGS);
-			dev_info(&host->pdev->dev, "\tRequest complete\n");
 			host->cmd = NULL;
 			host->data = NULL;
 			status = host->data_status;
 			if (unlikely(status)) {
-				dev_info(&host->pdev->dev, "\tRequest completed with error\n");
 				host->stop_transfer(host);
 				if (data) {
 					if (status & ATMCI_DTOE) {
-						dev_warn(&host->pdev->dev, "\tData timeout\n");
 						data->error = -ETIMEDOUT;
 						host->need_reset = true;
 					} else if (status & ATMCI_DCRCE) {
-						dev_info(&host->pdev->dev, "\tChecksum missmatch\n");
 						data->error = -EILSEQ;
 					} else {
-						dev_info(&host->pdev->dev, "\tIO Error (generic error)\n");
 						data->error = -EIO;
 					}
 				}
 			}
 
-//			udelay(1000);
 			atmci_request_end(host, host->mrq);
 			goto unlock; /* atmci_request_end() sets host->state */
 			break;
@@ -2343,7 +2194,6 @@ static irqreturn_t atmci_interrupt(int irq, void *dev_id)
 			break;
 
 		if (pending & ATMCI_DATA_ERROR_FLAGS) {
-			dev_info(&host->pdev->dev, "IRQ: data error\n");
 			atmci_writel(host, ATMCI_IDR, ATMCI_DATA_ERROR_FLAGS
 					| ATMCI_RXRDY | ATMCI_TXRDY
 					| ATMCI_ENDRX | ATMCI_ENDTX
@@ -2357,7 +2207,6 @@ static irqreturn_t atmci_interrupt(int irq, void *dev_id)
 		}
 
 		if (pending & ATMCI_TXBUFE) {
-			dev_info(&host->pdev->dev, "IRQ: tx buffer empty\n");
 			atmci_writel(host, ATMCI_IDR, ATMCI_TXBUFE);
 			atmci_writel(host, ATMCI_IDR, ATMCI_ENDTX);
 			/*
@@ -2373,7 +2222,6 @@ static irqreturn_t atmci_interrupt(int irq, void *dev_id)
 				atmci_pdc_complete(host);
 			}
 		} else if (pending & ATMCI_ENDTX) {
-			dev_info(&host->pdev->dev, "IRQ: end of tx buffer\n");
 			atmci_writel(host, ATMCI_IDR, ATMCI_ENDTX);
 
 			if (host->data_size) {
@@ -2384,7 +2232,6 @@ static irqreturn_t atmci_interrupt(int irq, void *dev_id)
 		}
 
 		if (pending & ATMCI_RXBUFF) {
-			dev_info(&host->pdev->dev, "IRQ: rx buffer full\n");
 			atmci_writel(host, ATMCI_IDR, ATMCI_RXBUFF);
 			atmci_writel(host, ATMCI_IDR, ATMCI_ENDRX);
 			/*
@@ -2400,7 +2247,6 @@ static irqreturn_t atmci_interrupt(int irq, void *dev_id)
 				atmci_pdc_complete(host);
 			}
 		} else if (pending & ATMCI_ENDRX) {
-			dev_info(&host->pdev->dev, "IRQ: end of rx buffer\n");
 			atmci_writel(host, ATMCI_IDR, ATMCI_ENDRX);
 
 			if (host->data_size) {
@@ -2614,9 +2460,6 @@ static int atmci_configure_dma(struct atmel_mci *host)
 							"rxtx");
 	if (IS_ERR(host->dma.chan))
 		return PTR_ERR(host->dma.chan);
-
-	dev_info(&host->pdev->dev, "using %s for DMA transfers\n",
-		 dma_chan_name(host->dma.chan));
 
 	host->dma_conf.src_addr = host->mapbase + ATMCI_RDR;
 	host->dma_conf.src_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
@@ -2891,9 +2734,9 @@ static int atmci_runtime_suspend(struct device *dev)
 {
 	struct atmel_mci *host = dev_get_drvdata(dev);
 
-//	clk_disable_unprepare(host->mck);
+	clk_disable_unprepare(host->mck);
 
-//	pinctrl_pm_select_sleep_state(dev);
+	pinctrl_pm_select_sleep_state(dev);
 
 	return 0;
 }
@@ -2902,10 +2745,9 @@ static int atmci_runtime_resume(struct device *dev)
 {
 	struct atmel_mci *host = dev_get_drvdata(dev);
 
-//	pinctrl_pm_select_default_state(dev);
+	pinctrl_pm_select_default_state(dev);
 
-//	return clk_prepare_enable(host->mck);
-	return 0;
+	return clk_prepare_enable(host->mck);
 }
 #endif
 
