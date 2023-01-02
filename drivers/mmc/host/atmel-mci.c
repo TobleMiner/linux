@@ -705,13 +705,6 @@ static u32 atmci_prepare_command(struct mmc_host *mmc,
 		cmdr |= ATMCI_CMDR_START_XFER;
 
 		if (cmd->opcode == SD_IO_RW_EXTENDED) {
-/*
-			if (cmd->arg & 0x08000000) {
-				cmdr |= ATMCI_CMDR_MULTI_BLOCK;
-			} else {
-				cmdr |= ATMCI_CMDR_BLOCK;
-			}
-*/
 			if (cmd->arg & 0x08000000) {
 				cmdr |= ATMCI_CMDR_SDIO_BLOCK;
 			} else {
@@ -1268,16 +1261,10 @@ static void atmci_start_request(struct atmel_mci *host,
 					blkr_val = ATMCI_BCNT(data->blksz);
 				}
 			} else {
-				if (mrq->cmd->opcode == SD_IO_RW_EXTENDED && !(mrq->data->flags & MMC_DATA_READ)) {
-					dev_info(&slot->mmc->class_dev, "Transferring %u blocks of size %u via block transfer\n", data->blocks, data->blksz);
-				}
 				blkr_val = ATMCI_BCNT(data->blocks) | ATMCI_BLKLEN(data->blksz);
 			}
 			atmci_writel(host, ATMCI_BLKR, blkr_val);
 			dev_vdbg(&slot->mmc->class_dev, "BLKR=0x%08x\n", blkr_val);
-			if (mrq->cmd->opcode == SD_IO_RW_EXTENDED && mrq->data && !(mrq->data->flags & MMC_DATA_READ)) {
-				dev_info(&slot->mmc->class_dev, "SDIO extended write, BLKR=0x%08x\n", blkr_val);
-			}
 
 			iflags |= host->prepare_data(host, data);
 		}
@@ -1990,9 +1977,6 @@ static void atmci_tasklet_func(unsigned long priv)
 				if (mrq->cmd->error) {
 					host->stop_transfer(host);
 					host->data = NULL;
-			if (host->mrq->cmd->opcode == SD_IO_RW_EXTENDED && host->mrq->data && !(host->mrq->data->flags & MMC_DATA_READ)) {
-				dev_info(&host->pdev->dev, "disable txrdy\n");
-			}
 					atmci_writel(host, ATMCI_IDR,
 					             ATMCI_TXRDY | ATMCI_RXRDY
 					             | ATMCI_DATA_ERROR_FLAGS);
@@ -2138,9 +2122,6 @@ static void atmci_tasklet_func(unsigned long priv)
 			atmci_command_complete(host, mrq->stop);
 			if (mrq->stop->error) {
 				host->stop_transfer(host);
-			if (host->mrq->cmd->opcode == SD_IO_RW_EXTENDED && host->mrq->data && !(host->mrq->data->flags & MMC_DATA_READ)) {
-				dev_info(&host->pdev->dev, "disable txrdy\n");
-			}
 				atmci_writel(host, ATMCI_IDR,
 				             ATMCI_TXRDY | ATMCI_RXRDY
 				             | ATMCI_DATA_ERROR_FLAGS);
@@ -2153,9 +2134,6 @@ static void atmci_tasklet_func(unsigned long priv)
 			break;
 
 		case STATE_END_REQUEST:
-			if (host->mrq->cmd->opcode == SD_IO_RW_EXTENDED && host->mrq->data && !(host->mrq->data->flags & MMC_DATA_READ)) {
-				dev_info(&host->pdev->dev, "disable txrdy\n");
-			}
 			atmci_writel(host, ATMCI_IDR, ATMCI_TXRDY | ATMCI_RXRDY
 			                   | ATMCI_DATA_ERROR_FLAGS);
 			host->cmd = NULL;
@@ -2322,16 +2300,10 @@ static void atmci_write_data_pio_byte(struct atmel_mci *host)
 	data->bytes_xfered += nbytes;
 
 	if (status & ATMCI_DATA_ERROR_FLAGS) {
-			if (host->mrq->cmd->opcode == SD_IO_RW_EXTENDED && host->mrq->data && !(host->mrq->data->flags & MMC_DATA_READ)) {
-				dev_info(&host->pdev->dev, "disable txrdy\n");
-			}
 		atmci_writel(host, ATMCI_IDR, (ATMCI_NOTBUSY | ATMCI_TXRDY
 					| ATMCI_DATA_ERROR_FLAGS));
 		host->data_status = status;
 	} else if (!sg) {
-			if (host->mrq->cmd->opcode == SD_IO_RW_EXTENDED && host->mrq->data && !(host->mrq->data->flags & MMC_DATA_READ)) {
-				dev_info(&host->pdev->dev, "disable txrdy\n");
-			}
 		atmci_writel(host, ATMCI_IDR, ATMCI_TXRDY);
 		atmci_writel(host, ATMCI_IER, ATMCI_NOTBUSY);
 		smp_wmb();
@@ -2391,9 +2363,6 @@ static void atmci_write_data_pio_word(struct atmel_mci *host)
 
 		status = atmci_readl(host, ATMCI_SR);
 		if (status & ATMCI_DATA_ERROR_FLAGS) {
-			if (host->mrq->cmd->opcode == SD_IO_RW_EXTENDED && host->mrq->data && !(host->mrq->data->flags & MMC_DATA_READ)) {
-				dev_info(&host->pdev->dev, "disable txrdy\n");
-			}
 			atmci_writel(host, ATMCI_IDR, (ATMCI_NOTBUSY | ATMCI_TXRDY
 						| ATMCI_DATA_ERROR_FLAGS));
 			host->data_status = status;
@@ -2409,9 +2378,6 @@ static void atmci_write_data_pio_word(struct atmel_mci *host)
 
 done:
 	data->bytes_xfered += nbytes;
-	if (host->mrq->cmd->opcode == SD_IO_RW_EXTENDED && host->mrq->data && !(host->mrq->data->flags & MMC_DATA_READ)) {
-		dev_info(&host->pdev->dev, "IRQ: pio transfer complete, %u bytes transferred\n", data->bytes_xfered);
-	}
 	atmci_writel(host, ATMCI_IDR, ATMCI_TXRDY);
 	atmci_writel(host, ATMCI_IER, ATMCI_NOTBUSY);
 	smp_wmb();
@@ -2458,9 +2424,6 @@ static irqreturn_t atmci_interrupt(int irq, void *dev_id)
 			break;
 
 		if (pending & ATMCI_DATA_ERROR_FLAGS) {
-			if (host->mrq->cmd->opcode == SD_IO_RW_EXTENDED && host->mrq->data && !(host->mrq->data->flags & MMC_DATA_READ)) {
-				dev_info(&host->pdev->dev, "disable txrdy\n");
-			}
 			atmci_writel(host, ATMCI_IDR, ATMCI_DATA_ERROR_FLAGS
 					| ATMCI_RXRDY | ATMCI_TXRDY
 					| ATMCI_ENDRX | ATMCI_ENDTX
@@ -2554,11 +2517,6 @@ static irqreturn_t atmci_interrupt(int irq, void *dev_id)
 			atmci_read_data_pio(host);
 		}
 		if (pending & ATMCI_TXRDY) {
-/*
-			if (host->mrq->cmd->opcode == SD_IO_RW_EXTENDED && host->mrq->data && !(host->mrq->data->flags & MMC_DATA_READ)) {
-				dev_info(&host->pdev->dev, "IRQ: txrdy\n");
-			}
-*/
 			atmci_write_data_pio(host);
 		}
 		if (pending & ATMCI_CMDRDY) {
