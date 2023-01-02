@@ -1754,8 +1754,107 @@ static void atmci_detect_change(unsigned long data)
 	}
 }
 
+inline u16 crc_itu_t_bit(u16 crc, unsigned int bit) {
+	u16 bit_out = crc & 0x8000;
+	crc <<= 1;
+	u16 bit_in = bit ? 1 : 0;
+	bit_in ^= bit_out >> 15;
+	crc |= bit_in;
+	crc ^= bit_in << 5;
+	crc ^= bit_in << 12;
+	return crc;
+}
+
+inline void bitbang_tx_one_bit_4bit(struct atmel_mci *host, bool bit[4]) {
+	gpio_set_value_cansleep(host->clock_pin, 0);
+
+	gpio_set_value_cansleep(host->cur_slot->slot_data->data_pins[0], bit[0]);
+	gpio_set_value_cansleep(host->cur_slot->slot_data->data_pins[1], bit[1]);
+	gpio_set_value_cansleep(host->cur_slot->slot_data->data_pins[2], bit[2]);
+	gpio_set_value_cansleep(host->cur_slot->slot_data->data_pins[3], bit[3]);
+	udelay(1);
+
+	gpio_set_value_cansleep(host->clock_pin, 1);
+	udelay(1);
+}
+
+inline void bitbang_tx_same_bit_4bit(struct atmel_mci *host, bool bit) {
+	bool bits[4] = { bit, bit, bit, bit };
+
+	bitbang_tx_one_bit_4bit(host, bits);
+}
+
+inline void bitbang_tx_one_byte_per_dataline(struct atmel_mci *host, u8 byte[4]) {
+	unsigned int bitpos;
+
+	for (bitpos = 0; bitpos < 8; bitpos++) {
+		bool bitval[4];
+		unsigned int io;
+
+		for (io = 0; io < 4; io++) {
+			bitval[io] = !!(byte[io] & 0x80);
+			byte[io] <<= 1;
+		}
+
+		bitbang_tx_one_bit_4bit(host, bitval);
+	}
+}
+
 static void bitbang_tx_4bit(struct atmel_mci *host) {
-	WARN(1, "4 bit bitbang not implemented");
+	struct scatterlist	*sg = host->sg;
+	void			*buf = sg_virt(sg);
+	struct mmc_data		*data = host->data;
+	unsigned int		nbytes = 0;
+	u16 crc16[4] = { 0, 0, 0, 0 };
+	unsigned int io;
+	u8 crc_buf[4];
+
+	/* start bit */
+	bitbang_tx_same_bit_4bit(host, 0);
+
+	/* data */
+	do {
+		unsigned int offset = 0;
+		void *buf = sg_virt(sg);
+		while (offset < sg->length) {
+			u8 value = get_unaligned((u8 *)buf + offset);
+			int bit_offset;
+			/* Each byte is two bit per dataline */
+			for (bit_offset = 4; bit_offset >= 0; bit_offset -= 4) {
+				bool bitvals[4] = {
+					!!(value & (0x1 << bit_offset)),
+					!!(value & (0x2 << bit_offset)),
+					!!(value & (0x4 << bit_offset)),
+					!!(value & (0x8 << bit_offset)),
+				};
+				for (io = 0; io < 4; io++) {
+					crc16[io] = crc_itu_t_bit(crc16[io], bitvals[io]);
+				}
+
+				bitbang_tx_one_bit_4bit(host, bitvals);
+			}
+			offset++;
+			nbytes++;
+		}
+		sg = sg_next(sg);
+		host->sg_len--;
+	} while (sg && host->sg_len);
+
+	/* CRC */
+	for (io = 0; io < 4; io++) {
+		crc_buf[io] = cpu_to_be16(crc16[io]) >> 8;
+	}
+	bitbang_tx_one_byte_per_dataline(host, crc_buf);
+	for (io = 0; io < 4; io++) {
+		crc_buf[io] = cpu_to_be16(crc16[io]) & 0xff;
+	}
+	bitbang_tx_one_byte_per_dataline(host, crc_buf);
+
+	/* end bit */
+	bitbang_tx_same_bit_4bit(host, 1);
+
+	host->sg = sg;
+	data->bytes_xfered += nbytes;
 }
 
 inline void bitbang_tx_one_bit_1bit(struct atmel_mci *host, bool bit) {
@@ -1766,7 +1865,6 @@ inline void bitbang_tx_one_bit_1bit(struct atmel_mci *host, bool bit) {
 
 	gpio_set_value_cansleep(host->clock_pin, 1);
 	udelay(1);
-
 }
 
 inline void bitbang_tx_one_byte_1bit(struct atmel_mci *host, u8 byte) {
