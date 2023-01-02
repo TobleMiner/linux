@@ -208,7 +208,7 @@ static struct mci_platform_data __initdata mci0_data = {
 		.reconfigure_ios = mci_reconfigure_ios_slot0,
 	},
 	.slot[1] = {
-		.bus_width = 1,
+		.bus_width = 4,
 		.detect_pin = -1,
 		.wp_pin = -1,
 		.data_pins = {
