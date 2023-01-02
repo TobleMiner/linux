@@ -135,15 +135,13 @@ static void mci_reconfigure_ios_slot0(bool bitbang) {
 	pioa_mask |= 1 << 14;		/* DATA2 */
 	pioa_mask |= 1 << 15;		/* DATA3 */
 
+	at32_deselect_pin(GPIO_PIN_PA(10));
+	at32_deselect_pin(GPIO_PIN_PA(11));
+	at32_deselect_pin(GPIO_PIN_PA(12));
+	at32_deselect_pin(GPIO_PIN_PA(13));
+	at32_deselect_pin(GPIO_PIN_PA(14));
+	at32_deselect_pin(GPIO_PIN_PA(15));
 	if (bitbang) {
-/*
-		at32_deselect_pin(GPIO_PIN_PA(10));
-		at32_deselect_pin(GPIO_PIN_PA(11));
-		at32_deselect_pin(GPIO_PIN_PA(12));
-		at32_deselect_pin(GPIO_PIN_PA(13));
-		at32_deselect_pin(GPIO_PIN_PA(14));
-		at32_deselect_pin(GPIO_PIN_PA(15));
-*/
 		at32_select_gpio(GPIO_PIN_PA(10), AT32_GPIOF_OUTPUT);
 		at32_select_gpio(GPIO_PIN_PA(11), AT32_GPIOF_OUTPUT | AT32_GPIOF_HIGH);
 		at32_select_gpio(GPIO_PIN_PA(12), AT32_GPIOF_OUTPUT | AT32_GPIOF_HIGH);
@@ -167,15 +165,13 @@ static void mci_reconfigure_ios_slot1(bool bitbang) {
 	piob_mask |= 1 <<  9;		/* DATA6 */
 	piob_mask |= 1 << 10;		/* DATA7 */
 
+	at32_deselect_pin(GPIO_PIN_PA(10));
+	at32_deselect_pin(GPIO_PIN_PB(6));
+	at32_deselect_pin(GPIO_PIN_PB(7));
+	at32_deselect_pin(GPIO_PIN_PB(8));
+	at32_deselect_pin(GPIO_PIN_PB(9));
+	at32_deselect_pin(GPIO_PIN_PB(10));
 	if (bitbang) {
-/*
-		at32_deselect_pin(GPIO_PIN_PA(10));
-		at32_deselect_pin(GPIO_PIN_PB(6));
-		at32_deselect_pin(GPIO_PIN_PB(7));
-		at32_deselect_pin(GPIO_PIN_PB(8));
-		at32_deselect_pin(GPIO_PIN_PB(9));
-		at32_deselect_pin(GPIO_PIN_PB(10));
-*/
 		at32_select_gpio(GPIO_PIN_PA(10), AT32_GPIOF_OUTPUT);
 		at32_select_gpio(GPIO_PIN_PB(6), AT32_GPIOF_OUTPUT | AT32_GPIOF_HIGH);
 		at32_select_gpio(GPIO_PIN_PB(7), AT32_GPIOF_OUTPUT | AT32_GPIOF_HIGH);
