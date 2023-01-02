@@ -121,7 +121,75 @@ static struct spi_board_info spi0_board_info[] __initdata = {
 	},
 };
 
+#define select_peripheral(port, pin_mask, periph, flags)	\
+	at32_select_periph(GPIO_##port##_BASE, pin_mask,	\
+			   GPIO_##periph, flags)
+
+static void mci_reconfigure_ios_slot0(bool bitbang) {
+	u32				pioa_mask;
+
+	pioa_mask =  1 << 10;		/* CLK */
+	pioa_mask |= 1 << 11;		/* CMD */
+	pioa_mask |= 1 << 12;		/* DATA0 */
+	pioa_mask |= 1 << 13;		/* DATA1 */
+	pioa_mask |= 1 << 14;		/* DATA2 */
+	pioa_mask |= 1 << 15;		/* DATA3 */
+
+	if (bitbang) {
+/*
+		at32_deselect_pin(GPIO_PIN_PA(10));
+		at32_deselect_pin(GPIO_PIN_PA(11));
+		at32_deselect_pin(GPIO_PIN_PA(12));
+		at32_deselect_pin(GPIO_PIN_PA(13));
+		at32_deselect_pin(GPIO_PIN_PA(14));
+		at32_deselect_pin(GPIO_PIN_PA(15));
+*/
+		at32_select_gpio(GPIO_PIN_PA(10), AT32_GPIOF_OUTPUT);
+		at32_select_gpio(GPIO_PIN_PA(11), AT32_GPIOF_OUTPUT | AT32_GPIOF_HIGH);
+		at32_select_gpio(GPIO_PIN_PA(12), AT32_GPIOF_OUTPUT | AT32_GPIOF_HIGH);
+		at32_select_gpio(GPIO_PIN_PA(13), AT32_GPIOF_OUTPUT | AT32_GPIOF_HIGH);
+		at32_select_gpio(GPIO_PIN_PA(14), AT32_GPIOF_OUTPUT | AT32_GPIOF_HIGH);
+		at32_select_gpio(GPIO_PIN_PA(15), AT32_GPIOF_OUTPUT | AT32_GPIOF_HIGH);
+	} else {
+		select_peripheral(PIOA, pioa_mask, PERIPH_A, 0);
+	}
+}
+
+static void mci_reconfigure_ios_slot1(bool bitbang) {
+	u32				pioa_mask;
+	u32				piob_mask;
+
+	pioa_mask =  1 << 10;		/* CLK */
+
+	piob_mask =  1 <<  6;		/* CMD */
+	piob_mask |= 1 <<  7;		/* DATA4 */
+	piob_mask |= 1 <<  8;		/* DATA5 */
+	piob_mask |= 1 <<  9;		/* DATA6 */
+	piob_mask |= 1 << 10;		/* DATA7 */
+
+	if (bitbang) {
+/*
+		at32_deselect_pin(GPIO_PIN_PA(10));
+		at32_deselect_pin(GPIO_PIN_PB(6));
+		at32_deselect_pin(GPIO_PIN_PB(7));
+		at32_deselect_pin(GPIO_PIN_PB(8));
+		at32_deselect_pin(GPIO_PIN_PB(9));
+		at32_deselect_pin(GPIO_PIN_PB(10));
+*/
+		at32_select_gpio(GPIO_PIN_PA(10), AT32_GPIOF_OUTPUT);
+		at32_select_gpio(GPIO_PIN_PB(6), AT32_GPIOF_OUTPUT | AT32_GPIOF_HIGH);
+		at32_select_gpio(GPIO_PIN_PB(7), AT32_GPIOF_OUTPUT | AT32_GPIOF_HIGH);
+		at32_select_gpio(GPIO_PIN_PB(8), AT32_GPIOF_OUTPUT | AT32_GPIOF_HIGH);
+		at32_select_gpio(GPIO_PIN_PB(9), AT32_GPIOF_OUTPUT | AT32_GPIOF_HIGH);
+		at32_select_gpio(GPIO_PIN_PB(10), AT32_GPIOF_OUTPUT | AT32_GPIOF_HIGH);
+	} else {
+		select_peripheral(PIOA, pioa_mask, PERIPH_A, 0);
+		select_peripheral(PIOB, piob_mask, PERIPH_B, 0);
+	}
+}
+
 static struct mci_platform_data __initdata mci0_data = {
+	.clock_pin = 		GPIO_PIN_PA(10),
 	.slot[0] = {
 		.bus_width	= 4,
 #if defined(CONFIG_BOARD_ATNGW100_MKII)
@@ -131,18 +199,47 @@ static struct mci_platform_data __initdata mci0_data = {
 		.detect_pin	= GPIO_PIN_PC(25),
 		.wp_pin		= GPIO_PIN_PE(0),
 #endif
+		.data_pins = {
+				GPIO_PIN_PA(12),
+				GPIO_PIN_PA(13),
+				GPIO_PIN_PA(14),
+				GPIO_PIN_PA(15),
+		},
+		.reconfigure_ios = mci_reconfigure_ios_slot0,
 	},
 	.slot[1] = {
 		.bus_width = 1,
 		.detect_pin = -1,
 		.wp_pin = -1,
+		.data_pins = {
+				GPIO_PIN_PB(7),
+				GPIO_PIN_PB(8),
+				GPIO_PIN_PB(9),
+				GPIO_PIN_PB(10),
+		},
+		.reconfigure_ios = mci_reconfigure_ios_slot1,
 	}
 };
 
+static void wifi_power_on(void) {
+	gpio_set_value_cansleep(GPIO_PIN_PB(11), 1);
+	mdelay(100);
+}
+
+static void wifi_power_off(void) {
+	gpio_set_value_cansleep(GPIO_PIN_PB(11), 0);
+}
+
+static void wifi_reset(void) {
+	wifi_power_off();
+	mdelay(100);
+	wifi_power_on();
+}
+
 static struct brcmfmac_sdio_platform_data brcmfmac_sdio_pdata = {
-	.power_on		= NULL,
-	.power_off		= NULL,
-	.reset			= NULL,
+	.power_on		= wifi_power_on,
+	.power_off		= wifi_power_off,
+	.reset			= wifi_reset
 };
 
 static struct platform_device brcmfmac_device = {
@@ -310,6 +407,11 @@ static int __init atngw100_init(void)
 		AT32_GPIOF_MULTIDRV | AT32_GPIOF_OUTPUT | AT32_GPIOF_HIGH);
 	platform_device_register(&i2c_gpio_device);
 	i2c_register_board_info(0, i2c_info, ARRAY_SIZE(i2c_info));
+
+	/* Configure brcmfmac power control GPIO */
+	at32_select_gpio(GPIO_PIN_PB(11), 0);
+	gpio_request(GPIO_PIN_PB(11), "AP6212A_power");
+	gpio_direction_output(GPIO_PIN_PB(11), 0);
 
 	platform_device_register(&brcmfmac_device);
 

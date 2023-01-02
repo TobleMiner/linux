@@ -398,6 +398,7 @@ config MMC_AU1X
 config MMC_ATMELMCI
 	tristate "Atmel SD/MMC Driver (Multimedia Card Interface)"
 	depends on AVR32 || ARCH_AT91
+	select CRC_ITU_T
 	help
 	  This selects the Atmel Multimedia Card Interface driver. If
 	  you have an AT32 (AVR32) or AT91 platform with a Multimedia
