@@ -67,7 +67,6 @@ void at32_select_periph(unsigned int port, u32 pin_mask,
 
 	/* Test if any of the requested pins is already muxed */
 	spin_lock(&pio_lock);
-/*
 	if (unlikely(pio->pinmux_mask & pin_mask)) {
 		printk(KERN_WARNING "%s: pin(s) busy (requested 0x%x, busy 0x%x)\n",
 		       pio->name, pin_mask, pio->pinmux_mask & pin_mask);
@@ -75,7 +74,6 @@ void at32_select_periph(unsigned int port, u32 pin_mask,
 		goto fail;
 	}
 	pio->pinmux_mask |= pin_mask;
-*/
 
 	/* enable pull ups */
 	pio_writel(pio, PUER, pin_mask);
@@ -113,12 +111,10 @@ void at32_select_gpio(unsigned int pin, unsigned long flags)
 		goto fail;
 	}
 
-/*
 	if (unlikely(test_and_set_bit(pin_index, &pio->pinmux_mask))) {
 		printk("%s: pin %u is busy\n", pio->name, pin_index);
 		goto fail;
 	}
-*/
 	if (flags & AT32_GPIOF_OUTPUT) {
 		if (flags & AT32_GPIOF_HIGH)
 			pio_writel(pio, SODR, mask);
@@ -183,16 +179,16 @@ void at32_reserve_pin(unsigned int port, u32 pin_mask)
 
 	/* Test if any of the requested pins is already muxed */
 	spin_lock(&pio_lock);
-/*
+
 	if (unlikely(pio->pinmux_mask & pin_mask)) {
 		printk(KERN_WARNING "%s: pin(s) busy (req. 0x%x, busy 0x%x)\n",
 		       pio->name, pin_mask, pio->pinmux_mask & pin_mask);
 		spin_unlock(&pio_lock);
 		goto fail;
 	}
-*/
+
 	/* Reserve pins */
-//	pio->pinmux_mask |= pin_mask;
+	pio->pinmux_mask |= pin_mask;
 	spin_unlock(&pio_lock);
 	return;
 
