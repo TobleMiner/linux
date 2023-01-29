@@ -47,6 +47,7 @@ struct atmel_uart_data {
 	int			num;		/* port num */
 	short			use_dma_tx;	/* use transmit DMA? */
 	short			use_dma_rx;	/* use receive DMA? */
+	bool			irda_mode;	/* enable IrDA mode */
 	void __iomem		*regs;		/* virt. base address, if any */
 	struct serial_rs485	rs485;		/* rs485 settings */
 };

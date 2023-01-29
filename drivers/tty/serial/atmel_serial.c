@@ -140,6 +140,7 @@ struct atmel_uart_port {
 	bool			use_dma_tx;     /* enable DMA transmitter */
 	bool			use_pdc_tx;	/* enable PDC transmitter */
 	struct atmel_dma_buffer	pdc_tx;		/* PDC transmitter */
+	bool			irda_en;	/* enable IrDA en- and decoder */
 
 	spinlock_t			lock_tx;	/* port lock */
 	spinlock_t			lock_rx;	/* port lock */
@@ -245,8 +246,10 @@ static inline void atmel_uart_write_char(struct uart_port *port, u8 value)
 
 static inline int atmel_uart_is_half_duplex(struct uart_port *port)
 {
-	return (port->rs485.flags & SER_RS485_ENABLED) &&
-		!(port->rs485.flags & SER_RS485_RX_DURING_TX);
+	struct atmel_uart_port *atmel_port = to_atmel_uart_port(port);
+
+	return ((port->rs485.flags & SER_RS485_ENABLED) &&
+		!(port->rs485.flags & SER_RS485_RX_DURING_TX)) || atmel_port->irda_en;
 }
 
 #ifdef CONFIG_SERIAL_ATMEL_PDC
@@ -372,11 +375,19 @@ static int atmel_config_rs485(struct uart_port *port,
 		mode |= ATMEL_US_USMODE_RS485;
 	} else {
 		dev_dbg(port->dev, "Setting UART to RS232\n");
-		if (atmel_use_pdc_tx(port))
-			atmel_port->tx_done_mask = ATMEL_US_ENDTX |
-				ATMEL_US_TXBUFE;
-		else
-			atmel_port->tx_done_mask = ATMEL_US_TXRDY;
+		if (atmel_port->irda_en) {
+			dev_dbg(port->dev, "Enabling IrDA\n");
+			mode |= ATMEL_US_USMODE_IRDA;
+			atmel_uart_writel(port, ATMEL_US_IF, 50);
+			atmel_uart_writel(port, ATMEL_US_FIDI, 1);
+			atmel_port->tx_done_mask = ATMEL_US_TXEMPTY;
+		} else {
+			if (atmel_use_pdc_tx(port))
+				atmel_port->tx_done_mask = ATMEL_US_ENDTX |
+					ATMEL_US_TXBUFE;
+			else
+				atmel_port->tx_done_mask = ATMEL_US_TXRDY;
+		}
 	}
 	atmel_uart_writel(port, ATMEL_US_MR, mode);
 
@@ -450,6 +461,13 @@ static void atmel_set_mctrl(struct uart_port *port, u_int mctrl)
 	else
 		mode |= ATMEL_US_CHMODE_NORMAL;
 
+	if (atmel_port->irda_en) {
+		dev_dbg(port->dev, "Enabling IrDA\n");
+		mode |= ATMEL_US_USMODE_IRDA;
+		atmel_uart_writel(port, ATMEL_US_IF, 50);
+		atmel_uart_writel(port, ATMEL_US_FIDI, 1);
+	}
+
 	atmel_uart_writel(port, ATMEL_US_MR, mode);
 }
 
@@ -514,10 +532,12 @@ static void atmel_start_tx(struct uart_port *port)
 	struct atmel_uart_port *atmel_port = to_atmel_uart_port(port);
 
 	if (atmel_use_pdc_tx(port) && (atmel_uart_readl(port, ATMEL_PDC_PTSR)
-				       & ATMEL_PDC_TXTEN))
-		/* The transmitter is already running.  Yes, we
+				       & ATMEL_PDC_TXTEN)) {
+		/* The transmitter is already running. Yes, we
 		   really need this.*/
 		return;
+	}
+
 
 	if (atmel_use_pdc_tx(port) || atmel_use_dma_tx(port))
 		if (atmel_uart_is_half_duplex(port))
@@ -539,6 +559,8 @@ static void atmel_start_tx(struct uart_port *port)
  */
 static void atmel_start_rx(struct uart_port *port)
 {
+	struct atmel_uart_port *atmel_port = to_atmel_uart_port(port);
+
 	/* reset status and receiver */
 	atmel_uart_writel(port, ATMEL_US_CR, ATMEL_US_RSTSTA);
 
@@ -763,25 +785,31 @@ static void atmel_tx_chars(struct uart_port *port)
 		port->icount.tx++;
 		port->x_char = 0;
 	}
-	if (uart_circ_empty(xmit) || uart_tx_stopped(port))
+	if (uart_circ_empty(xmit) || uart_tx_stopped(port)) {
+		atmel_uart_writel(port, ATMEL_US_CR, ATMEL_US_TXDIS);
 		return;
+	}
 
 	while (atmel_uart_readl(port, ATMEL_US_CSR) &
 	       atmel_port->tx_done_mask) {
 		atmel_uart_write_char(port, xmit->buf[xmit->tail]);
 		xmit->tail = (xmit->tail + 1) & (UART_XMIT_SIZE - 1);
 		port->icount.tx++;
-		if (uart_circ_empty(xmit))
+		if (uart_circ_empty(xmit)) {
 			break;
+		}
 	}
 
 	if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS)
 		uart_write_wakeup(port);
 
-	if (!uart_circ_empty(xmit))
+	if (uart_circ_empty(xmit)) {
+		atmel_uart_writel(port, ATMEL_US_CR, ATMEL_US_TXDIS);
+	} else {
 		/* Enable interrupts */
 		atmel_uart_writel(port, ATMEL_US_IER,
 				  atmel_port->tx_done_mask);
+	}
 }
 
 static void atmel_complete_tx_dma(void *arg)
@@ -825,6 +853,8 @@ static void atmel_complete_tx_dma(void *arg)
 		atmel_port->hd_start_rx = true;
 		atmel_uart_writel(port, ATMEL_US_IER,
 				  atmel_port->tx_done_mask);
+	} else if (atmel_port->irda_en) {
+		atmel_tasklet_schedule(atmel_port, &atmel_port->tasklet_tx);
 	}
 
 	spin_unlock_irqrestore(&port->lock, flags);
@@ -1293,10 +1323,11 @@ atmel_handle_transmit(struct uart_port *port, unsigned int pending)
 				dev_warn(port->dev, "Should start RX, but TX fifo is not empty\n");
 
 			atmel_port->hd_start_rx = false;
+			atmel_uart_writel(port, ATMEL_US_CR, ATMEL_US_TXDIS);
 			atmel_start_rx(port);
+		} else {
+			atmel_tasklet_schedule(atmel_port, &atmel_port->tasklet_tx);
 		}
-
-		atmel_tasklet_schedule(atmel_port, &atmel_port->tasklet_tx);
 	}
 }
 
@@ -1390,8 +1421,10 @@ static void atmel_tx_pdc(struct uart_port *port)
 	int count;
 
 	/* nothing left to transmit? */
-	if (atmel_uart_readl(port, ATMEL_PDC_TCR))
+	if (atmel_uart_readl(port, ATMEL_PDC_TCR)) {
+		/* Still data in buffer, nothing to do */
 		return;
+	}
 
 	xmit->tail += pdc->ofs;
 	xmit->tail &= UART_XMIT_SIZE - 1;
@@ -1399,7 +1432,7 @@ static void atmel_tx_pdc(struct uart_port *port)
 	port->icount.tx += pdc->ofs;
 	pdc->ofs = 0;
 
-	/* more to transmit - setup next transfer */
+	/* Transfer complete, setup next one */
 
 	/* disable PDC transmit */
 	atmel_uart_writel(port, ATMEL_PDC_PTCR, ATMEL_PDC_TXTDIS);
@@ -1424,7 +1457,12 @@ static void atmel_tx_pdc(struct uart_port *port)
 	} else {
 		if (atmel_uart_is_half_duplex(port)) {
 			/* DMA done, stop TX, start RX for RS485 */
-			atmel_start_rx(port);
+			atmel_port->hd_start_rx = true;
+			/*
+			 * There might be some data left buffered in the shift register.
+			 * Make sure we get rid of that before disabling the transmitter
+			 */
+			atmel_uart_writel(port, ATMEL_US_IER, atmel_port->tx_done_mask);
 		}
 	}
 
@@ -1920,8 +1958,12 @@ static int atmel_startup(struct uart_port *port)
 	 * Finally, enable the serial port
 	 */
 	atmel_uart_writel(port, ATMEL_US_CR, ATMEL_US_RSTSTA | ATMEL_US_RSTRX);
-	/* enable xmit & rcvr */
-	atmel_uart_writel(port, ATMEL_US_CR, ATMEL_US_TXEN | ATMEL_US_RXEN);
+	/* enable rcvr and xmitr */
+	if (atmel_uart_is_half_duplex(port)) {
+		atmel_uart_writel(port, ATMEL_US_CR, ATMEL_US_RXEN);
+	} else {
+		atmel_uart_writel(port, ATMEL_US_CR, ATMEL_US_RXEN | ATMEL_US_TXEN);
+	}
 
 	setup_timer(&atmel_port->uart_timer,
 			atmel_uart_timer_callback,
@@ -2242,6 +2284,13 @@ static void atmel_set_termios(struct uart_port *port, struct ktermios *termios,
 
 	atmel_uart_writel(port, ATMEL_US_BRGR, quot);
 
+	if (atmel_port->irda_en) {
+		dev_dbg(port->dev, "Enabling IrDA\n");
+		mode |= ATMEL_US_USMODE_IRDA;
+		atmel_uart_writel(port, ATMEL_US_IF, 50);
+		atmel_uart_writel(port, ATMEL_US_FIDI, 1);
+	}
+
 	/* set the mode, clock divisor, parity, stop bits and data size */
 	atmel_uart_writel(port, ATMEL_US_MR, mode);
 
@@ -2264,7 +2313,11 @@ static void atmel_set_termios(struct uart_port *port, struct ktermios *termios,
 	}
 
 	atmel_uart_writel(port, ATMEL_US_CR, ATMEL_US_RSTSTA | ATMEL_US_RSTRX);
-	atmel_uart_writel(port, ATMEL_US_CR, ATMEL_US_TXEN | ATMEL_US_RXEN);
+	if (atmel_uart_is_half_duplex(port)) {
+		atmel_uart_writel(port, ATMEL_US_CR, ATMEL_US_RXEN);
+	} else {
+		atmel_uart_writel(port, ATMEL_US_CR, ATMEL_US_RXEN | ATMEL_US_TXEN);
+	}
 
 	/* restore interrupts */
 	atmel_uart_writel(port, ATMEL_US_IER, imr);
@@ -2453,6 +2506,10 @@ static int atmel_init_port(struct atmel_uart_port *atmel_port,
 		port->membase	= NULL;
 	}
 
+	if (pdata) {
+		atmel_port->irda_en = pdata->irda_mode;
+	}
+
 	/* for console, the clock could already be configured */
 	if (!atmel_port->clk) {
 		atmel_port->clk = clk_get(&pdev->dev, "usart");
@@ -2472,8 +2529,8 @@ static int atmel_init_port(struct atmel_uart_port *atmel_port,
 		/* only enable clock when USART is in use */
 	}
 
-	/* Use TXEMPTY for interrupt when rs485 else TXRDY or ENDTX|TXBUFE */
-	if (port->rs485.flags & SER_RS485_ENABLED)
+	/* Use TXEMPTY for interrupt when half duplex else TXRDY or ENDTX|TXBUFE */
+	if (atmel_uart_is_half_duplex(port))
 		atmel_port->tx_done_mask = ATMEL_US_TXEMPTY;
 	else if (atmel_use_pdc_tx(port)) {
 		port->fifosize = PDC_BUFFER_SIZE;
@@ -2883,6 +2940,13 @@ static int atmel_serial_probe(struct platform_device *pdev)
 				  ATMEL_US_USMODE_NORMAL);
 		atmel_uart_writel(&atmel_port->uart, ATMEL_US_CR,
 				  ATMEL_US_RTSEN);
+	}
+
+	if (atmel_port->irda_en) {
+		dev_info(&pdev->dev, "Enabling IrDA\n");
+		atmel_uart_writel(&atmel_port->uart, ATMEL_US_IF, 50);
+		atmel_uart_writel(&atmel_port->uart, ATMEL_US_MR,
+				  ATMEL_US_USMODE_IRDA | ATMEL_US_FILTER);
 	}
 
 	/*
