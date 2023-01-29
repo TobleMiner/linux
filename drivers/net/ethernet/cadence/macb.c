@@ -992,8 +992,8 @@ static int macb_rx(struct macb *bp, int budget)
 		/* Make hw descriptor updates visible to CPU */
 		rmb();
 
-		addr = desc->addr;
-		ctrl = desc->ctrl;
+		addr = READ_ONCE(desc->addr);
+		ctrl = READ_ONCE(desc->ctrl);
 
 		if (!(addr & MACB_BIT(RX_USED)))
 			break;
