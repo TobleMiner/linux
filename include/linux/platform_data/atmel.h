@@ -38,8 +38,11 @@ struct atmel_nand_data {
 	unsigned int	num_parts;
 	bool		has_dma;		/* support dma transfer */
 
-	/* default is false, only for at32ap7000 chip is true */
-	bool		need_reset_workaround;
+	/*
+	 * default is false, only for at32ap7000 chip is true
+	 * Enables reset workaround and 16bit only read quirk
+	 */
+	bool		is_at32ap7000;
 };
 
  /* Serial */
@@ -47,6 +50,7 @@ struct atmel_uart_data {
 	int			num;		/* port num */
 	short			use_dma_tx;	/* use transmit DMA? */
 	short			use_dma_rx;	/* use receive DMA? */
+	bool			irda_mode;	/* enable IrDA mode */
 	void __iomem		*regs;		/* virt. base address, if any */
 	struct serial_rs485	rs485;		/* rs485 settings */
 };

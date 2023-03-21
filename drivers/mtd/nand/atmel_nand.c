@@ -1375,7 +1375,7 @@ static int atmel_nand_read_page(struct mtd_info *mtd, struct nand_chip *chip,
 	 * actual data.
 	 */
 	struct atmel_nand_host *host = nand_get_controller_data(chip);
-	if (host->board.need_reset_workaround)
+	if (host->board.is_at32ap7000)
 		ecc_writel(host->ecc, CR, ATMEL_ECC_RST);
 
 	/* read the page */
@@ -1501,7 +1501,7 @@ static void atmel_nand_hwctl(struct mtd_info *mtd, int mode)
 	struct nand_chip *nand_chip = mtd_to_nand(mtd);
 	struct atmel_nand_host *host = nand_get_controller_data(nand_chip);
 
-	if (host->board.need_reset_workaround)
+	if (host->board.is_at32ap7000)
 		ecc_writel(host->ecc, CR, ATMEL_ECC_RST);
 }
 
@@ -2117,6 +2117,12 @@ static int nfc_sram_init(struct mtd_info *mtd)
 	return 0;
 }
 
+static uint8_t nand_read_byte16(struct mtd_info *mtd)
+{
+	struct nand_chip *chip = mtd_to_nand(mtd);
+	return (uint8_t)readw(chip->IO_ADDR_R);
+}
+
 static struct platform_driver atmel_nand_nfc_driver;
 /*
  * Probe for the NAND device.
@@ -2128,6 +2134,8 @@ static int atmel_nand_probe(struct platform_device *pdev)
 	struct nand_chip *nand_chip;
 	struct resource *mem;
 	int res, irq;
+
+	dev_info(&pdev->dev, "Probing NAND controller\n");
 
 	/* Allocate memory for the device structure (and zero it) */
 	host = devm_kzalloc(&pdev->dev, sizeof(*host), GFP_KERNEL);
@@ -2180,6 +2188,14 @@ static int atmel_nand_probe(struct platform_device *pdev)
 	/* Set address of NAND IO lines */
 	nand_chip->IO_ADDR_R = host->io_base;
 	nand_chip->IO_ADDR_W = host->io_base;
+
+	/*
+	 * AVR32 nand controller quirk, only 16 bit wide access is supported.
+	 * 8 bit wide access results in all zero result
+	 */
+	if (host->board.is_at32ap7000) {
+		nand_chip->read_byte = nand_read_byte16;
+	}
 
 	if (nand_nfc.is_initialized) {
 		/* NFC driver is probed and initialized */
@@ -2325,6 +2341,7 @@ err_no_card:
 	if (host->dma_chan)
 		dma_release_channel(host->dma_chan);
 err_nand_ioremap:
+	dev_err(&pdev->dev, "Failed to probe NAND controller: %d\n", res);
 	return res;
 }
 

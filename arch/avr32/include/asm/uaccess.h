@@ -244,6 +244,7 @@ extern int __put_user_bad(void);
 		"1:	ld." suffix "	%1, %3			\n"	\
 		"2:						\n"	\
 		"	.subsection 1				\n"	\
+		"	.align 2				\n"	\
 		"3:	mov	%0, %4				\n"	\
 		"	rjmp	2b				\n"	\
 		"	.subsection 0				\n"	\
@@ -309,6 +310,7 @@ extern int __put_user_bad(void);
 		"1:	st." suffix "	%1, %3			\n"	\
 		"2:						\n"	\
 		"	.subsection 1				\n"	\
+		"	.align 2				\n"	\
 		"3:	mov	%0, %4				\n"	\
 		"	rjmp	2b				\n"	\
 		"	.subsection 0				\n"	\

@@ -97,7 +97,7 @@ __copy_user:
 	.size	__copy_user, . - __copy_user
 
 	.section .fixup,"ax"
-	.align	1
+	.align	2
 19:	sub	r10, -4
 29:	retal	r10
 

@@ -9,6 +9,7 @@
  */
 #include <linux/clk.h>
 #include <linux/etherdevice.h>
+#include <linux/fb.h>
 #include <linux/gpio.h>
 #include <linux/irq.h>
 #include <linux/i2c.h>
@@ -18,9 +19,13 @@
 #include <linux/platform_device.h>
 #include <linux/types.h>
 #include <linux/leds.h>
+#include <linux/mmc/core.h>
+#include <linux/mmc/host.h>
+#include <linux/spi/mmc_spi.h>
 #include <linux/spi/spi.h>
 #include <linux/atmel-mci.h>
 #include <linux/usb/atmel_usba_udc.h>
+#include <linux/er_tft023_1.h>
 
 #include <asm/io.h>
 #include <asm/setup.h>
@@ -29,6 +34,173 @@
 #include <mach/board.h>
 #include <mach/init.h>
 #include <mach/portmux.h>
+
+#include <sound/atmel-abdac.h>
+
+#include <video/atmel_lcdc.h>
+
+static struct fb_videomode __initdata ltv350qv_modes[] = {
+	{
+		.name		= "320x240 @ 75",
+		.refresh	= 75,
+		.xres		= 320,		.yres		= 240,
+		.pixclock	= KHZ2PICOS(6891),
+
+		.left_margin	= 17,		.right_margin	= 33,
+		.upper_margin	= 10,		.lower_margin	= 10,
+		.hsync_len	= 16,		.vsync_len	= 1,
+
+		.sync		= 0,
+		.vmode		= FB_VMODE_NONINTERLACED,
+	},
+};
+
+static struct fb_monspecs __initdata atstk1000_default_monspecs = {
+	.manufacturer		= "SNG",
+	.monitor		= "LTV350QV",
+	.modedb			= ltv350qv_modes,
+	.modedb_len		= ARRAY_SIZE(ltv350qv_modes),
+	.hfmin			= 14820,
+	.hfmax			= 22230,
+	.vfmin			= 60,
+	.vfmax			= 90,
+	.dclkmax		= 30000000,
+};
+
+static struct fb_videomode __initdata vga_modes[] = {
+	{
+		.name		= "640x480 @ 60",
+		.refresh	= 60,
+		.xres		= 640,		.yres		= 480,
+		.pixclock	= KHZ2PICOS(25175),
+
+		.left_margin	= 48,		.right_margin	= 16,
+		.upper_margin	= 31,		.lower_margin	= 11,
+		.hsync_len	= 96,		.vsync_len	= 2,
+
+		.sync		= 0,
+		.vmode		= FB_VMODE_NONINTERLACED,
+	},
+};
+
+static struct fb_monspecs __initdata vga_default_monspecs = {
+	.manufacturer		= "VESA",
+	.monitor		= "VGA",
+	.modedb			= vga_modes,
+	.modedb_len		= ARRAY_SIZE(vga_modes),
+	.hfmin			= 31000,
+	.hfmax			= 32000,
+	.vfmin			= 59,
+	.vfmax			= 61,
+	.dclkmax		= 25200000,
+};
+
+static struct fb_videomode __initdata vga_13h_modes[] = {
+	{
+		.name		= "160x480 @ 60",
+		.refresh	= 60,
+		.xres		= 160,		.yres		= 480,
+		.pixclock	= KHZ2PICOS(6294),
+
+		.left_margin	= 12,		.right_margin	= 4,
+		.upper_margin	= 31,		.lower_margin	= 11,
+		.hsync_len	= 24,		.vsync_len	= 2,
+
+		.sync		= /* FB_SYNC_VERT_HIGH_ACT */ 0,
+		.vmode		= FB_VMODE_NONINTERLACED,
+	},
+};
+
+static struct fb_monspecs __initdata vga_13h_monspecs = {
+	.manufacturer		= "VESA",
+	.monitor		= "VGA",
+	.modedb			= vga_13h_modes,
+	.modedb_len		= ARRAY_SIZE(vga_13h_modes),
+	.hfmin			= 28000,
+	.hfmax			= 32000,
+	.vfmin			= 59,
+	.vfmax			= 61,
+	.dclkmax		= 6500,
+};
+
+static struct fb_videomode __initdata er_tft023_1_modes[] = {
+	{
+		.name		= "320x240 @ 70",
+		.refresh	= 70,
+		.xres		= 320,		.yres		= 240,
+		.pixclock	= KHZ2PICOS(6350),
+
+		.left_margin	= 10,		.right_margin	= 20,
+		.upper_margin	= 1,		.lower_margin	= 5,
+		.hsync_len	= 10,		.vsync_len	= 2,
+
+		.sync		= /* FB_SYNC_VERT_HIGH_ACT */ 0,
+		.vmode		= FB_VMODE_NONINTERLACED,
+	},
+};
+
+static struct fb_monspecs __initdata er_tft023_1_monspecs = {
+	.manufacturer		= "EastRising",
+	.monitor		= "RGB panel",
+	.modedb			= er_tft023_1_modes,
+	.modedb_len		= ARRAY_SIZE(er_tft023_1_modes),
+	.hfmin			= 28000,
+	.hfmax			= 32000,
+	.vfmin			= 68,
+	.vfmax			= 72,
+	.dclkmax		= 6500,
+};
+
+struct atmel_lcdfb_pdata __initdata atngw_lcdc_data = {
+	.default_bpp		= 16,
+	.default_dmacon		= ATMEL_LCDC_DMAEN | ATMEL_LCDC_DMA2DEN,
+	.default_lcdcon2	= (ATMEL_LCDC_DISTYPE_TFT
+				   | ATMEL_LCDC_INVCLK
+				   | ATMEL_LCDC_CLKMOD_ALWAYSACTIVE
+				   | ATMEL_LCDC_MEMOR_BIG),
+	.default_monspecs	= &er_tft023_1_monspecs,
+	.guard_time		= 2,
+	.lcd_wiring_mode	= ATMEL_LCDC_WIRING_RGB,
+};
+
+/*
+#define LCDC_CONTROL (							\
+		ATMEL_LCDC(PC, HSYNC) | ATMEL_LCDC(PC, VSYNC) |		\
+		ATMEL_LCDC(PE, DVAL))
+
+#define LCDC_DATA_RED (							\
+		ATMEL_LCDC(PD, DATA7) | ATMEL_LCDC(PD, DATA6) |		\
+		ATMEL_LCDC(PC, DATA5))
+
+#define LCDC_DATA_GREEN (						\
+		ATMEL_LCDC(PD, DATA15) | ATMEL_LCDC(PD, DATA14) |	\
+		ATMEL_LCDC(PD, DATA13))
+
+#define LCDC_DATA_BLUE (						\
+		ATMEL_LCDC(PD, DATA23) | ATMEL_LCDC(PD, DATA22) |	\
+		ATMEL_LCDC(PE, DATA21))
+*/
+
+#define LCDC_CONTROL (							\
+		ATMEL_LCDC(PC, HSYNC) | ATMEL_LCDC(PC, PCLK) |		\
+		ATMEL_LCDC(PC, VSYNC) | ATMEL_LCDC(PC, DVAL))
+
+#define LCDC_DATA_RED (							\
+		ATMEL_LCDC(PD, DATA14) | ATMEL_LCDC(PD, DATA21) |	\
+		ATMEL_LCDC(PD, DATA22) | ATMEL_LCDC(PD, DATA23) |	\
+		ATMEL_LCDC(PC, DATA2))
+
+#define LCDC_DATA_GREEN (						\
+		ATMEL_LCDC(PD, DATA11) | ATMEL_LCDC(PD, DATA12) |	\
+		ATMEL_LCDC(PD, DATA13) | ATMEL_LCDC(PD, DATA14) |	\
+		ATMEL_LCDC(PD, DATA15) | ATMEL_LCDC(PD, DATA19))
+
+#define LCDC_DATA_BLUE (						\
+		ATMEL_LCDC(PC, DATA3) | ATMEL_LCDC(PC, DATA4) |		\
+		ATMEL_LCDC(PC, DATA5) | ATMEL_LCDC(PD, DATA6) |		\
+		ATMEL_LCDC(PD, DATA7))
+
+#define LCDC_IOMUX (LCDC_DATA_RED | LCDC_DATA_GREEN | LCDC_DATA_BLUE | LCDC_CONTROL)
 
 /* Oscillator frequencies. These are board-specific */
 unsigned long at32_board_osc_rates[3] = {
@@ -94,12 +266,14 @@ static struct mtd_partition nand_partitions[] = {
 static struct atmel_nand_data atngw100mkii_nand_data __initdata = {
 	.cle		= 21,
 	.ale		= 22,
+	.det_pin	= -1,
 	.rdy_pin	= GPIO_PIN_PB(28),
 	.enable_pin	= GPIO_PIN_PE(23),
 	.bus_width_16	= true,
 	.ecc_mode	= NAND_ECC_SOFT,
 	.parts		= nand_partitions,
 	.num_parts	= ARRAY_SIZE(nand_partitions),
+//	.has_dma	= true
 };
 #endif
 
@@ -112,11 +286,35 @@ struct eth_addr {
 static struct eth_addr __initdata hw_addr[2];
 static struct macb_platform_data __initdata eth_data[2];
 
+static const struct er_tft023_1_data panel_data = {
+	.reset_gpio = GPIO_PIN_PA(8),
+	.dc_gpio = GPIO_PIN_PA(5)
+};
+
 static struct spi_board_info spi0_board_info[] __initdata = {
 	{
 		.modalias	= "mtd_dataflash",
 		.max_speed_hz	= 8000000,
 		.chip_select	= 0,
+	},
+	{
+		.modalias	= "panel_er_tft023_1",
+		.max_speed_hz	= 1000000,
+		.chip_select	= 1,
+		.platform_data	= &panel_data,
+	},
+};
+
+struct mmc_spi_platform_data mmc_spi_pdata = {
+	.caps = MMC_CAP_NEEDS_POLL
+};
+
+static struct spi_board_info spi1_board_info[] __initdata = {
+	{
+		.modalias	= "mmc_spi",
+		.max_speed_hz	= 25000000,
+		.chip_select	= 0,
+		.platform_data	= &mmc_spi_pdata,
 	},
 };
 
@@ -200,6 +398,9 @@ void __init setup_board(void)
 {
 	at32_map_usart(1, 0, 0);	/* USART 1: /dev/ttyS0, DB9 */
 	at32_setup_serial_console(0);
+
+//	at32_map_usart(0, 1, 0);	/* USART 0: /dev/ttyS1, J5, IrDA */
+//	at32_map_usart(2, 2, 0);	/* USART 2: /dev/ttyS2, J6, IrDA */
 }
 
 static const struct gpio_led ngw_leds[] = {
@@ -243,6 +444,72 @@ static struct i2c_board_info __initdata i2c_info[] = {
 	/* NOTE:  original ATtiny24 firmware is at address 0x0b */
 };
 
+static struct atmel_abdac_pdata __initdata abdac0_data = {
+};
+
+static int __init set_abdac_rate(struct platform_device *pdev)
+{
+	int retval;
+	struct clk *osc1;
+	struct clk *pll1;
+	struct clk *abdac;
+
+	if (pdev == NULL)
+		return -ENXIO;
+
+	osc1 = clk_get(NULL, "osc1");
+	if (IS_ERR(osc1)) {
+		retval = PTR_ERR(osc1);
+		goto out;
+	}
+
+	pll1 = clk_get(NULL, "pll1");
+	if (IS_ERR(pll1)) {
+		retval = PTR_ERR(pll1);
+		goto out_osc1;
+	}
+
+	abdac = clk_get(&pdev->dev, "sample_clk");
+	if (IS_ERR(abdac)) {
+		retval = PTR_ERR(abdac);
+		goto out_pll1;
+	}
+
+	retval = clk_set_parent(pll1, osc1);
+	if (retval != 0)
+		goto out_abdac;
+
+	/*
+	 * Rate is 32000 to 50000 and ABDAC oversamples 256x. Multiply, in
+	 * power of 2, to a value above 80 MHz. Power of 2 so it is possible
+	 * for the generic clock to divide it down again and 80 MHz is the
+	 * lowest frequency for the PLL.
+	 */
+	retval = clk_round_rate(pll1,
+			44100 * 256 * 16);
+	if (retval <= 0) {
+		retval = -EINVAL;
+		goto out_abdac;
+	}
+
+	retval = clk_set_rate(pll1, retval);
+	if (retval != 0)
+		goto out_abdac;
+
+	retval = clk_set_parent(abdac, pll1);
+	if (retval != 0)
+		goto out_abdac;
+
+out_abdac:
+	clk_put(abdac);
+out_pll1:
+	clk_put(pll1);
+out_osc1:
+	clk_put(osc1);
+out:
+	return retval;
+}
+
 static int __init atngw100_init(void)
 {
 	unsigned	i;
@@ -256,10 +523,13 @@ static int __init atngw100_init(void)
 
 	smc_set_timing(&nand_config, &nand_timing);
 	smc_set_configuration(3, &nand_config);
+	pr_info("Adding NAND flash\n");
 	at32_add_device_nand(0, &atngw100mkii_nand_data);
 #endif
 
-	at32_add_device_usart(0);
+	at32_add_device_usart(0); /* Line 0 (ttyS0), USART 1 */
+//	at32_add_device_usart(1); /* Line 1 (ttyS1), USART 0 */
+//	at32_add_device_usart(2); /* Line 2 (ttyS2), USART 2 */
 
 	set_hw_addr(at32_add_device_eth(0, &eth_data[0]));
 #ifndef CONFIG_BOARD_ATNGW100_MKII_LCD
@@ -267,6 +537,10 @@ static int __init atngw100_init(void)
 #endif
 
 	at32_add_device_spi(0, spi0_board_info, ARRAY_SIZE(spi0_board_info));
+/*
+	mmc_spi_pdata.ocr_mask = mmc_vddrange_to_ocrmask(3300, 3400);
+	at32_add_device_spi(1, spi1_board_info, ARRAY_SIZE(spi1_board_info));
+*/
 	at32_add_device_mci(0, &mci0_data);
 	at32_add_device_usba(0, &atngw100_usba_data);
 
@@ -293,6 +567,16 @@ static int __init atngw100_init(void)
 	platform_device_register(&i2c_gpio_device);
 	i2c_register_board_info(0, i2c_info, ARRAY_SIZE(i2c_info));
 
+	set_abdac_rate(at32_add_device_abdac(0, &abdac0_data));
+	at32_add_device_lcdc(0, &atngw_lcdc_data,
+			     fbmem_start, fbmem_size,
+			     LCDC_IOMUX);
+/*
+	// Use LCDC without IOs for now
+	at32_add_device_lcdc(0, &atngw_lcdc_data,
+			     fbmem_start, fbmem_size,
+			     ATMEL_LCDC(PD, DATA14));
+*/
 	return 0;
 }
 postcore_initcall(atngw100_init);

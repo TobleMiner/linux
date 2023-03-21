@@ -4116,6 +4116,8 @@ static struct nand_flash_dev *nand_get_flash_type(struct mtd_info *mtd,
 		return ERR_PTR(-ENODEV);
 	}
 
+	print_hex_dump(KERN_INFO, "NAND ID ", DUMP_PREFIX_OFFSET, 8, 1, id_data, 8, false);
+
 	if (!type)
 		type = nand_flash_ids;
 

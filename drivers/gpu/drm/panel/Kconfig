@@ -1,3 +1,10 @@
+config DRM_PANEL_ER_TFT023
+	tristate "EastRising TFT023 RGB panel"
+	depends on SPI
+	help
+	  Static panel driver for the EastRising TFT023 display in 4-wire
+	  control + 18 bit parallel RGB mode
+
 config DRM_PANEL
 	bool
 	depends on DRM

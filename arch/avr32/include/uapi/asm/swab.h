@@ -18,7 +18,8 @@ extern unsigned short __builtin_bswap_16(unsigned short x);
  * avr32-linux-gcc versions earlier than 4.2 improperly sign-extends
  * the result.
  */
-#if !(__GNUC__ == 4 && __GNUC_MINOR__ < 2)
+/*
+#if !(__GNUC__ == 4 && __GNUC_MINOR__ < 2 && 0)
 static inline __attribute_const__ __u16 __arch_swab16(__u16 val)
 {
 	return __builtin_bswap_16(val);
@@ -31,5 +32,5 @@ static inline __attribute_const__ __u32 __arch_swab32(__u32 val)
 }
 #define __arch_swab32 __arch_swab32
 #endif
-
+*/
 #endif /* _UAPI__ASM_AVR32_SWAB_H */

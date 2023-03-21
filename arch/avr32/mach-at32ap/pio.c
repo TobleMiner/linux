@@ -310,12 +310,13 @@ static void __init
 gpio_irq_setup(struct pio_device *pio, int irq, int gpio_irq)
 {
 	unsigned	i;
+	int pin_irq = gpio_irq;
 
 	irq_set_chip_data(irq, pio);
 
-	for (i = 0; i < 32; i++, gpio_irq++) {
-		irq_set_chip_data(gpio_irq, pio);
-		irq_set_chip_and_handler(gpio_irq, &gpio_irqchip,
+	for (i = 0; i < 32; i++, pin_irq++) {
+		irq_set_chip_data(pin_irq, pio);
+		irq_set_chip_and_handler(pin_irq, &gpio_irqchip,
 					 handle_simple_irq);
 	}
 

@@ -40,6 +40,7 @@
 #include <linux/pinctrl/consumer.h>
 
 #include <asm/cacheflush.h>
+#include <asm/delay.h>
 #include <asm/io.h>
 #include <asm/unaligned.h>
 
@@ -315,6 +316,8 @@ struct atmel_mci {
 	void __iomem		*regs;
 
 	struct scatterlist	*sg;
+	struct scatterlist	*dma_current_sg;
+	unsigned int		dma_current_sg_len;
 	unsigned int		sg_len;
 	unsigned int		pio_offset;
 	unsigned int		*buffer;
@@ -1007,6 +1010,12 @@ static void atmci_dma_complete(void *arg)
 
 	dev_vdbg(&host->pdev->dev, "DMA complete\n");
 
+	if (data && (data->flags & MMC_DATA_WRITE)) {
+		dev_info(&host->pdev->dev,
+		        "(%s) set pending xfer complete (write)\n", __func__);
+		udelay(10000);
+	}
+
 	if (host->caps.has_dma_conf_reg)
 		/* Disable DMA hardware handshaking on MCI */
 		atmci_writel(host, ATMCI_DMA, atmci_readl(host, ATMCI_DMA) & ~ATMCI_DMAEN);
@@ -1018,8 +1027,6 @@ static void atmci_dma_complete(void *arg)
 	 * to send the stop command or waiting for NBUSY in this case.
 	 */
 	if (data) {
-		dev_dbg(&host->pdev->dev,
-		        "(%s) set pending xfer complete\n", __func__);
 		atmci_set_pending(host, EVENT_XFER_COMPLETE);
 		tasklet_schedule(&host->tasklet);
 
@@ -1043,7 +1050,7 @@ static void atmci_dma_complete(void *arg)
 		 * completion callback" rule of the dma engine
 		 * framework.
 		 */
-		atmci_writel(host, ATMCI_IER, ATMCI_NOTBUSY);
+//		atmci_writel(host, ATMCI_IER, ATMCI_NOTBUSY);
 	}
 }
 
@@ -1162,6 +1169,14 @@ atmci_prepare_data_dma(struct atmel_mci *host, struct mmc_data *data)
 
 	iflags = ATMCI_DATA_ERROR_FLAGS;
 
+	/*
+	 * Writes with DMA seem to break a lot. Test if just reading via
+	 * DMA works bette
+	 */
+	if (data->flags & MMC_DATA_WRITE ||
+	    data->flags & MMC_DATA_READ) {
+		return atmci_prepare_data(host, data);
+	}
 	/*
 	 * We don't do DMA on "complex" transfers, i.e. with
 	 * non-word-aligned buffers or lengths. Also, we don't bother
@@ -1354,14 +1369,17 @@ static void atmci_start_request(struct atmel_mci *host,
 	 * unexpected errors especially for read operations in SDIO mode.
 	 * Unfortunately, in PDC mode, command has to be sent before starting
 	 * the transfer.
+	 * Note that atmci_prepare_command might have rejected ddoing a DMA
+	 * transfer because data was very short or unaligned. Check
+	 * host->data_chan to make sure DMA is truly on for this transfer.
 	 */
-	if (host->submit_data != &atmci_submit_data_dma)
+	if (host->submit_data != &atmci_submit_data_dma || !host->data_chan)
 		atmci_send_command(host, cmd, cmdflags);
 
 	if (data)
 		host->submit_data(host, data);
 
-	if (host->submit_data == &atmci_submit_data_dma)
+	if (host->submit_data == &atmci_submit_data_dma && host->data_chan)
 		atmci_send_command(host, cmd, cmdflags);
 
 	if (mrq->stop) {
@@ -1884,10 +1902,10 @@ static void atmci_tasklet_func(unsigned long priv)
 
 			if (host->caps.need_notbusy_for_read_ops ||
 			   (host->data->flags & MMC_DATA_WRITE)) {
+				atmci_test_and_clear_pending(host, EVENT_NOTBUSY);
 				atmci_writel(host, ATMCI_IER, ATMCI_NOTBUSY);
 				state = STATE_WAITING_NOTBUSY;
 			} else if (host->mrq->stop) {
-				atmci_writel(host, ATMCI_IER, ATMCI_CMDRDY);
 				atmci_send_stop_cmd(host, data);
 				state = STATE_SENDING_STOP;
 			} else {
@@ -1920,8 +1938,6 @@ static void atmci_tasklet_func(unsigned long priv)
 				 * command to send.
 				 */
 				if (host->mrq->stop) {
-					atmci_writel(host, ATMCI_IER,
-					             ATMCI_CMDRDY);
 					atmci_send_stop_cmd(host, data);
 					state = STATE_SENDING_STOP;
 				} else {
@@ -2426,12 +2442,12 @@ static int atmci_configure_dma(struct atmel_mci *host)
 	host->dma.chan = dma_request_slave_channel_reason(&host->pdev->dev,
 							"rxtx");
 
-	if (PTR_ERR(host->dma.chan) == -ENODEV) {
+	if (PTR_ERR(host->dma.chan) == -ENODEV || PTR_ERR(host->dma.chan) == -EPROBE_DEFER) {
 		struct mci_platform_data *pdata = host->pdev->dev.platform_data;
 		dma_cap_mask_t mask;
 
 		if (!pdata || !pdata->dma_filter)
-			return -ENODEV;
+			return PTR_ERR(host->dma.chan);
 
 		dma_cap_zero(mask);
 		dma_cap_set(DMA_SLAVE, mask);
@@ -2445,7 +2461,7 @@ static int atmci_configure_dma(struct atmel_mci *host)
 	if (IS_ERR(host->dma.chan))
 		return PTR_ERR(host->dma.chan);
 
-	dev_info(&host->pdev->dev, "using %s for DMA transfers\n",
+	dev_info(&host->pdev->dev, "using %s for sinle byte DMA transfers\n",
 		 dma_chan_name(host->dma.chan));
 
 	host->dma_conf.src_addr = host->mapbase + ATMCI_RDR;

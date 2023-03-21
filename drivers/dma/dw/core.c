@@ -27,6 +27,8 @@
 #include "../dmaengine.h"
 #include "internal.h"
 
+#include <asm/delay.h>
+
 /*
  * This supports the Synopsys "DesignWare AHB Central DMA Controller",
  * (DW_ahb_dmac) which is used with various AMBA 2.0 systems (not all
@@ -42,9 +44,9 @@
 		struct dma_slave_config	*_sconfig = &_dwc->dma_sconfig;	\
 		bool _is_slave = is_slave_direction(_dwc->direction);	\
 		u8 _smsize = _is_slave ? _sconfig->src_maxburst :	\
-			DW_DMA_MSIZE_16;			\
+			DW_DMA_MSIZE_1;			\
 		u8 _dmsize = _is_slave ? _sconfig->dst_maxburst :	\
-			DW_DMA_MSIZE_16;			\
+			DW_DMA_MSIZE_1;			\
 		u8 _dms = (_dwc->direction == DMA_MEM_TO_DEV) ?		\
 			_dwc->dws.p_master : _dwc->dws.m_master;	\
 		u8 _sms = (_dwc->direction == DMA_DEV_TO_MEM) ?		\
@@ -279,7 +281,7 @@ dwc_descriptor_complete(struct dw_dma_chan *dwc, struct dw_desc *desc,
 	unsigned long			flags;
 	struct dmaengine_desc_callback	cb;
 
-	dev_vdbg(chan2dev(&dwc->chan), "descriptor %u complete\n", txd->cookie);
+//	dev_info(chan2dev(&dwc->chan), "descriptor %u complete\n", txd->cookie);
 
 	spin_lock_irqsave(&dwc->lock, flags);
 	dma_cookie_complete(txd);
@@ -294,6 +296,8 @@ dwc_descriptor_complete(struct dw_dma_chan *dwc, struct dw_desc *desc,
 	async_tx_ack(&desc->txd);
 	dwc_desc_put(dwc, desc);
 	spin_unlock_irqrestore(&dwc->lock, flags);
+
+	udelay(1000);
 
 	dmaengine_desc_callback_invoke(&cb, NULL);
 }
@@ -751,6 +755,7 @@ dwc_prep_slave_sg(struct dma_chan *chan, struct scatterlist *sgl,
 	unsigned int		i;
 	struct scatterlist	*sg;
 	size_t			total_len = 0;
+	unsigned int		num_descriptors = 0;
 
 	dev_vdbg(chan2dev(chan), "%s\n", __func__);
 
@@ -786,6 +791,7 @@ slave_sg_todev_fill_desc:
 			desc = dwc_desc_get(dwc);
 			if (!desc)
 				goto err_desc_get;
+			num_descriptors++;
 
 			lli_write(desc, sar, mem);
 			lli_write(desc, dar, reg);
@@ -839,6 +845,7 @@ slave_sg_fromdev_fill_desc:
 			desc = dwc_desc_get(dwc);
 			if (!desc)
 				goto err_desc_get;
+			num_descriptors++;
 
 			lli_write(desc, sar, reg);
 			lli_write(desc, dar, mem);
@@ -878,6 +885,8 @@ slave_sg_fromdev_fill_desc:
 	prev->lli.llp = 0;
 	lli_clear(prev, ctllo, DWC_CTLL_LLP_D_EN | DWC_CTLL_LLP_S_EN);
 	first->total_len = total_len;
+
+//	dev_info(chan2dev(chan), "Scheduled %u sg entries in %u descriptors, total length: %u", sg_len, num_descriptors, total_len);
 
 	return &first->txd;
 
@@ -932,6 +941,8 @@ static int dwc_config(struct dma_chan *chan, struct dma_slave_config *sconfig)
 
 	convert_burst(&dwc->dma_sconfig.src_maxburst);
 	convert_burst(&dwc->dma_sconfig.dst_maxburst);
+
+//	pr_info("Config, \n");
 
 	return 0;
 }
@@ -1565,6 +1576,7 @@ int dw_dma_probe(struct dw_dma_chip *chip)
 			 */
 			dwc->block_size =
 				(4 << ((pdata->block_size >> 4 * i) & 0xf)) - 1;
+			dev_info(chip->dev, "Max block size channel%d: %u\n", i, dwc->block_size);
 			dwc->nollp =
 				(dwc_params >> DWC_PARAMS_MBLK_EN & 0x1) == 0;
 		} else {
@@ -1608,6 +1620,10 @@ int dw_dma_probe(struct dw_dma_chip *chip)
 	dw->dma.directions = BIT(DMA_DEV_TO_MEM) | BIT(DMA_MEM_TO_DEV) |
 			     BIT(DMA_MEM_TO_MEM);
 	dw->dma.residue_granularity = DMA_RESIDUE_GRANULARITY_BURST;
+
+	if (pdata->dma_filter) {
+		dw->dma.filter = *pdata->dma_filter;
+	}
 
 	err = dma_async_device_register(&dw->dma);
 	if (err)

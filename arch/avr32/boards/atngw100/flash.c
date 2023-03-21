@@ -41,19 +41,17 @@ static struct mtd_partition flash_parts[] = {
 	{
 		.name           = "u-boot",
 		.offset         = 0x00000000,
-		.size           = 0x00020000,           /* 128 KiB */
-		.mask_flags     = MTD_WRITEABLE,
+		.size           = 0x00040000,           /* 256 KiB */
 	},
 	{
 		.name           = "root",
-		.offset         = 0x00020000,
+		.offset         = 0x00040000,
 		.size           = 0x007d0000,
 	},
 	{
 		.name           = "env",
 		.offset         = 0x007f0000,
 		.size           = 0x00010000,
-		.mask_flags     = MTD_WRITEABLE,
 	},
 };
 

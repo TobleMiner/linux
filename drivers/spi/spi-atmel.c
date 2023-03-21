@@ -1589,6 +1589,7 @@ static int atmel_spi_probe(struct platform_device *pdev)
 	if (as->use_pdc) {
 		ret = devm_request_irq(&pdev->dev, irq, atmel_spi_pdc_interrupt,
 					0, dev_name(&pdev->dev), master);
+		dev_info(&pdev->dev, "Atmel SPI Controller using PDC only\n");
 	} else {
 		ret = devm_request_irq(&pdev->dev, irq, atmel_spi_pio_interrupt,
 					0, dev_name(&pdev->dev), master);

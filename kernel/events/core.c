@@ -9730,6 +9730,8 @@ SYSCALL_DEFINE5(perf_event_open,
 	int f_flags = O_RDWR;
 	int cgroup_fd = -1;
 
+	pr_info("sys_perf_event_open\n");
+
 	/* for future expandability... */
 	if (flags & ~PERF_FLAG_ALL)
 		return -EINVAL;

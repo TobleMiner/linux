@@ -51,7 +51,7 @@ __strncpy_from_user:
 	retal	r10
 
 	.section .fixup, "ax"
-	.align	1
+	.align	2
 3:	mov	r12, -EFAULT
 	retal	r12
 

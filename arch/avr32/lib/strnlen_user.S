@@ -59,7 +59,7 @@ _task_size:
 	.long	TASK_SIZE
 
 	.section .fixup, "ax"
-	.align	1
+	.align	2
 19:	retal	0
 
 	.section __ex_table, "a"

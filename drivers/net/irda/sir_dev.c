@@ -533,8 +533,11 @@ EXPORT_SYMBOL(sirdev_write_complete);
  * normally unwrapping and building LAP-skb's (unless rx disabled)
  */
 
-int sirdev_receive(struct sir_dev *dev, const unsigned char *cp, size_t count) 
+int sirdev_receive(struct sir_dev *dev, const unsigned char *cp, size_t count)
 {
+	pr_info("sir_receive(dev, cp, %zd)\n", count);
+	print_hex_dump(KERN_INFO, "SIR RX ", DUMP_PREFIX_OFFSET, 16, 1, cp, count, true);
+
 	if (!dev || !dev->netdev) {
 		net_warn_ratelimited("%s(), not ready yet!\n", __func__);
 		return -1;

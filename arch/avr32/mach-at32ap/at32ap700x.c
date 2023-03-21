@@ -606,6 +606,40 @@ static struct resource dw_dmac0_resource[] = {
 	PBMEM(0xff200000),
 	IRQ(2),
 };
+
+#define DMA_MAP_ATTR(channel_ ) ((void *)channel_)
+
+static const struct dma_slave_map dw_dma_map[] = {
+	{ "atmel_mci", "rxtx", DMA_MAP_ATTR(0) },
+	{ "atmel_abdac", "tx", DMA_MAP_ATTR(1) },
+	{ "atmel_ac97c", "tx", DMA_MAP_ATTR(2) },
+};
+
+bool dw_dma_filter_fn(struct dma_chan *chan, void *filter_param) {
+	pr_info("Checking DMA channel %u\n", chan->chan_id);
+	return chan->chan_id == (unsigned int)filter_param;
+}
+
+static const struct dma_filter dw_dma_filter = {
+	.mapcnt	= 3,
+	.map	= dw_dma_map,
+	.fn	= dw_dma_filter_fn
+};
+
+static struct dw_dma_platform_data dw_dmac0_data = {
+	.nr_channels		= 3,
+	.is_private		= false,
+	.is_memcpy		= true,
+	.is_nollp		= false,
+	.chan_allocation_order	= CHAN_ALLOCATION_ASCENDING,
+	.chan_priority		= CHAN_PRIORITY_ASCENDING,
+	.block_size		= 128,
+	.nr_masters		= 2,
+	.data_width		= { 4, 4 },
+	.dma_filter		= &dw_dma_filter
+};
+
+//DEFINE_DEV_DATA(dw_dmac, 0);
 DEFINE_DEV(dw_dmac, 0);
 DEV_CLK(hclk, dw_dmac0, hsb, 10);
 
@@ -923,6 +957,7 @@ err_add_resources:
 static struct atmel_uart_data atmel_usart0_data = {
 	.use_dma_tx	= 1,
 	.use_dma_rx	= 1,
+	.irda_mode	= true,
 };
 static struct resource atmel_usart0_resource[] = {
 	PBMEM(0xffe00c00),
@@ -944,7 +979,8 @@ DEV_CLK(usart, atmel_usart1, pba, 4);
 
 static struct atmel_uart_data atmel_usart2_data = {
 	.use_dma_tx	= 1,
-	.use_dma_rx	= 1,
+//	.use_dma_rx	= 1,
+	.irda_mode	= true,
 };
 static struct resource atmel_usart2_resource[] = {
 	PBMEM(0xffe01400),
@@ -1988,26 +2024,31 @@ at32_add_device_nand(unsigned int id, struct atmel_nand_data *data)
 				ARRAY_SIZE(smc_cs3_resource)))
 		goto fail;
 
-	/* For at32ap7000, we use the reset workaround for nand driver */
-	data->need_reset_workaround = true;
+	/*
+	 * For at32ap7000, we need to work around a number of quirks:
+	 * - Additional resets
+	 * - 16 bit bus reads to NAND controller only, even with 8 bit NAND flash
+	 */
+	data->is_at32ap7000 = true;
 
 	if (platform_device_add_data(pdev, data,
 				sizeof(struct atmel_nand_data)))
 		goto fail;
 
 	hmatrix_sfr_set_bits(HMATRIX_SLAVE_EBI, HMATRIX_EBI_NAND_ENABLE);
-	if (data->enable_pin)
+	if (gpio_is_valid(data->enable_pin))
 		at32_select_gpio(data->enable_pin,
 				AT32_GPIOF_OUTPUT | AT32_GPIOF_HIGH);
-	if (data->rdy_pin)
+	if (gpio_is_valid(data->rdy_pin))
 		at32_select_gpio(data->rdy_pin, 0);
-	if (data->det_pin)
+	if (gpio_is_valid(data->det_pin))
 		at32_select_gpio(data->det_pin, 0);
 
 	platform_device_add(pdev);
 	return pdev;
 
 fail:
+	pr_err("Failed to setup NAND controller\n");
 	platform_device_put(pdev);
 	return NULL;
 }

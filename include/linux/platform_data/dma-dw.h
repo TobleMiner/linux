@@ -1,4 +1,4 @@
-/*
+	/*
  * Driver for the Synopsys DesignWare DMA Controller
  *
  * Copyright (C) 2007 Atmel Corporation
@@ -12,6 +12,7 @@
 #define _PLATFORM_DATA_DMA_DW_H
 
 #include <linux/device.h>
+#include <linux/dmaengine.h>
 
 #define DW_DMA_MAX_NR_MASTERS	4
 
@@ -49,19 +50,21 @@ struct dw_dma_slave {
  *		(in bytes, power of 2)
  */
 struct dw_dma_platform_data {
-	unsigned int	nr_channels;
-	bool		is_private;
-	bool		is_memcpy;
-	bool		is_nollp;
+	unsigned int		nr_channels;
+	bool			is_private;
+	bool			is_memcpy;
+	bool			is_nollp;
 #define CHAN_ALLOCATION_ASCENDING	0	/* zero to seven */
 #define CHAN_ALLOCATION_DESCENDING	1	/* seven to zero */
-	unsigned char	chan_allocation_order;
+	unsigned char		chan_allocation_order;
 #define CHAN_PRIORITY_ASCENDING		0	/* chan0 highest */
 #define CHAN_PRIORITY_DESCENDING	1	/* chan7 highest */
-	unsigned char	chan_priority;
-	unsigned int	block_size;
-	unsigned char	nr_masters;
-	unsigned char	data_width[DW_DMA_MAX_NR_MASTERS];
+	unsigned char		chan_priority;
+	unsigned int		block_size;
+	unsigned char		nr_masters;
+	unsigned char		data_width[DW_DMA_MAX_NR_MASTERS];
+	const struct dma_filter	*dma_filter;
 };
 
 #endif /* _PLATFORM_DATA_DMA_DW_H */
+
