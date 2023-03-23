@@ -27,8 +27,6 @@
 #include "../dmaengine.h"
 #include "internal.h"
 
-#include <asm/delay.h>
-
 /*
  * This supports the Synopsys "DesignWare AHB Central DMA Controller",
  * (DW_ahb_dmac) which is used with various AMBA 2.0 systems (not all
@@ -296,8 +294,6 @@ dwc_descriptor_complete(struct dw_dma_chan *dwc, struct dw_desc *desc,
 	async_tx_ack(&desc->txd);
 	dwc_desc_put(dwc, desc);
 	spin_unlock_irqrestore(&dwc->lock, flags);
-
-	udelay(1000);
 
 	dmaengine_desc_callback_invoke(&cb, NULL);
 }
