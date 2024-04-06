@@ -1,0 +1,433 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+/*
+ * WatchGuard XTM330 Device Tree Source
+ *
+ * Copyright 2009-2012 Freescale Semiconductor Inc.
+ * Copyright 2024 Tobias Schramm <t.schramm@manjaro.org>
+ */
+
+/dts-v1/;
+
+/include/ "p2020si-pre.dtsi"
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+
+/ {
+	model = "WatchGuard XTM330";
+	compatible = "watchguard,xtm330";
+
+	aliases {
+		ethernet0 = &enet0;
+		ethernet1 = &enet1;
+		ethernet2 = &enet2;
+		serial0 = &serial0;
+		serial1 = &serial1;
+		pci0 = &pci0;
+		pci1 = &pci1;
+	};
+/*
+	chosen {
+		stdout-path = "serial0:115200";
+	};
+*/
+	memory {
+		device_type = "memory";
+	};
+
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		cpu-spintables@0x3ffff000 {
+			reg = <0x0 0x3ffff000 0x0 0x40000000>;
+		};
+	};
+
+	cpus {
+		PowerPC,P2020@0 {
+			bus-frequency = <533000000>;
+			clock-frequency = <1066666656>;
+			timebase-frequency = <66666666>;
+		};
+
+		PowerPC,P2020@1 {
+			bus-frequency = <533000000>;
+			clock-frequency = <1066666656>;
+			timebase-frequency = <66666666>;
+			enable-method = "spin-table";
+			cpu-release-addr = <0x0 0x3ffff2a0>;
+		};
+	};
+
+	lbc: localbus@ffe05000 {
+		bus-frequency = <33333333>;
+		reg = <0x0 0xffe05000 0x0 0x1000>;
+		ranges = <0 0x0 0x0 0xefe00000 0x200000
+			  1 0x0 0x0 0xffa00000 0x40000>;
+
+		nor@0,0 {
+			#address-cells = <1>;
+			#size-cells = <1>;
+			compatible = "cfi-flash";
+			reg = <0 0x0 0x200000>;
+			bank-width = <2>;
+			device-width = <1>;
+
+			partition@0 {
+				reg = <0x0 0x200000>;
+				label = "Full NOR flash";
+			};
+
+			partition@00000000 {
+				reg = <0x0 0x20000>;
+				label = "NOR (RW) WG CFG0";
+			};
+
+			partition@00020000 {
+				reg = <0x20000 0x10000>;
+				label = "NOR (RW) WG CFG1";
+			};
+
+			partition@00030000 {
+				reg = <0x30000 0x10000>;
+				label = "NOR (RW) WG MFG DATA";
+			};
+
+			partition@00040000 {
+				reg = <0x40000 0xb0000>;
+				label = "NOR (RW) WG bootOpt Data & reserved";
+			};
+
+			partition@000F0000 {
+				reg = <0xf0000 0x10000>;
+				label = "NOR (RW) WG U-Boot ENV";
+			};
+
+			partition@00100000 {
+				reg = <0x100000 0x80000>;
+				label = "NOR (RW) WG U-Boot Image";
+			};
+
+			partition@00180000 {
+				reg = <0x180000 0x80000>;
+				label = "NOR (RW) WG U-Boot FAILSAFE";
+			};
+		};
+
+		nand@1,0 {
+			#address-cells = <1>;
+			#size-cells = <1>;
+			compatible = "fsl,p2020-fcm-nand", "fsl,elbc-fcm-nand";
+			reg = <1 0x0 0x40000>;
+
+			partition@0 {
+				reg = <0x0 0x20000000>;
+				label = "Full NAND flash";
+			};
+
+			partition@00000000 {
+				reg = <0x0 0x20000>;
+				label = "NAND (RW) WG DTB Image";
+			};
+
+			partition@00020000 {
+				reg = <0x20000 0x500000>;
+				label = "NAND (RW) WG SYSA Kernel";
+			};
+
+			partition@00520000 {
+				reg = <0x520000 0x79e0000>;
+				label = "NAND (RW) WG SYSA_CODE";
+			};
+
+			partition@07f00000 {
+				reg = <0x7f00000 0x16000000>;
+				label = "NAND (RW) WG SYSA_DATA";
+			};
+
+			partition@1df00000 {
+				reg = <0x1df00000 0x500000>;
+				label = "NAND (RW) WG SYSB Kernel";
+			};
+
+			partition@1e400000 {
+				reg = <0x1e400000 0x1800000>;
+				label = "NAND (RW) WG SYSB_CODE";
+			};
+
+			partition@1fc00000 {
+				reg = <0x1fc00000 0x400000>;
+				label = "NAND (RW) WG KDUMP";
+			};
+		};
+	};
+
+	soc: soc@ffe00000 {
+		bus-frequency = <533000000>;
+		ranges = <0x0 0x0 0xffe00000 0x100000>;
+
+		gpio0: gpio-controller@fc00 {
+			switch_reset {
+				gpio-hog;
+				gpios = <13 GPIO_ACTIVE_HIGH>;
+				output-high;
+				line-name = "switch-reset";
+			};
+
+			gpio14 {
+				gpio-hog;
+				gpios = <14 GPIO_ACTIVE_HIGH>;
+				output-high;
+				line-name = "gpio14";
+			};
+
+			gpio15 {
+				gpio-hog;
+				gpios = <15 GPIO_ACTIVE_HIGH>;
+				output-high;
+				line-name = "gpio15";
+			};
+		};
+
+		i2c@3000 {
+/*
+			hwmon@2d {
+				compatible = "national,w83793";
+				reg = <0x2d>;
+			};
+*/
+			rtc@32 {
+				compatible = "ricoh,rs5c372a";
+				reg = <0x32>;
+			};
+		};
+
+		i2c@3100 {
+			status = "disabled";
+		};
+
+		usb@22000 {
+			phy_type = "ulpi";
+			dr_mode = "host";
+		};
+
+		mdio@24520 {
+			switch@10 {
+				compatible = "marvell,mv88e6085";
+				#address-cells = <1>;
+				#size-cells = <0>;
+				dsa,member = <0 0>;
+				reg = <0x10>;
+
+				ports {
+					#address-cells = <1>;
+					#size-cells = <0>;
+
+					port@0 {
+						reg = <0>;
+						label = "lan0";
+					};
+
+					port@1 {
+						reg = <1>;
+						label = "lan1";
+					};
+
+					port@2 {
+						reg = <2>;
+						label = "lan2";
+					};
+
+					port@3 {
+						reg = <3>;
+						label = "lan3";
+					};
+
+					switch0port4: port@4 {
+						reg = <4>;
+						link = <&switch1port0>;
+						phy-mode = "internal";
+
+						fixed-link {
+							speed = <1000>;
+							full-duplex;
+						};
+					};
+
+					port@5 {
+						reg = <5>;
+						label = "switch0-cpu";
+						ethernet = <&enet2>;
+						phy-mode = "rgmii-id";
+
+						fixed-link {
+							speed = <1000>;
+							full-duplex;
+						};
+					};
+
+					switch0port6: port@6 {
+						reg = <6>;
+						link = <&switch1port6>;
+						phy-mode = "rgmii";
+
+						fixed-link {
+							speed = <1000>;
+							full-duplex;
+						};
+					};
+				};
+			};
+
+			switch@11 {
+				compatible = "marvell,mv88e6085";
+				#address-cells = <1>;
+				#size-cells = <0>;
+				dsa,member = <0 1>;
+				reg = <0x11>;
+
+				ports {
+					#address-cells = <1>;
+					#size-cells = <0>;
+
+					switch1port0: port@0 {
+						reg = <0>;
+						link = <&switch0port4>;
+						phy-mode = "internal";
+
+						fixed-link {
+							speed = <1000>;
+							full-duplex;
+						};
+					};
+
+					port@1 {
+					       reg = <1>;
+					       label = "lan4";
+					};
+
+					port@2 {
+					       reg = <2>;
+					       label = "lan5";
+					};
+
+					port@3 {
+					       reg = <3>;
+					       label = "lan6";
+					};
+
+					/* Port 4 is not connected */
+
+					port@5 {
+						reg = <5>;
+						label = "switch1-cpu";
+						ethernet = <&enet0>;
+						phy-mode = "rgmii-id";
+
+						fixed-link {
+							speed = <1000>;
+							full-duplex;
+						};
+					};
+
+					switch1port6: port@6 {
+						reg = <6>;
+						link = <&switch0port6>;
+						phy-mode = "rgmii";
+
+						fixed-link {
+							speed = <1000>;
+							full-duplex;
+						};
+					};
+				};
+			};
+		};
+
+		mdio@25520 {
+			/* status = "disabled"; */
+		};
+
+		mdio@26520 {
+			/* status = "disabled"; */
+		};
+
+		ptp_clock@24e00 {
+			fsl,tclk-period = <5>;
+			fsl,tmr-prsc = <200>;
+			fsl,tmr-add = <0xCCCCCCCD>;
+			fsl,tmr-fiper1 = <0x3B9AC9FB>;
+			fsl,tmr-fiper2 = <0x0001869B>;
+			fsl,max-adj = <249999999>;
+		};
+
+		enet0: ethernet@24000 {
+			phy-connection-type = "rgmii";
+
+			fixed-link {
+				speed = <1000>;
+				full-duplex;
+			};
+		};
+
+		enet1: ethernet@25000 {
+			status = "disabled";
+		};
+
+		enet2: ethernet@26000 {
+			phy-connection-type = "rgmii";
+
+			fixed-link {
+				speed = <1000>;
+				full-duplex;
+			};
+		};
+	};
+
+	pci0: pcie@ffe08000 {
+		reg = <0 0xffe08000 0 0x1000>;
+		status = "disabled";
+	};
+
+	pci1: pcie@ffe09000 {
+		reg = <0 0xffe09000 0 0x1000>;
+		status = "disabled";
+	};
+
+	pci2: pcie@ffe0a000 {
+		reg = <0 0xffe0a000 0 0x1000>;
+		ranges = <0x2000000 0x0 0x80000000 0 0x80000000 0x0 0x20000000
+			  0x1000000 0x0 0x00000000 0 0xffc00000 0x0 0x10000>;
+		clock-frequency = <33333333>;
+
+		pcie@0 {
+			ranges = <0x2000000 0x0 0x80000000
+				  0x2000000 0x0 0x80000000
+				  0x0 0x20000000
+
+				  0x1000000 0x0 0x0
+				  0x1000000 0x0 0x0
+				  0x0 0x100000>;
+		};
+	};
+};
+
+/include/ "p2020si-post.dtsi"
+
+/ {
+        memory {
+                reg = <0x0 0x0 0x0 0x40000000>;
+        };
+};
+
+&serial0 {
+	clock-frequency = <533000000>;
+};
+
+&serial1 {
+	clock-frequency = <533000000>;
+};
+
+

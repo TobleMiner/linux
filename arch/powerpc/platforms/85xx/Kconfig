@@ -96,6 +96,15 @@ config MPC85xx_RDB
 	  P1020 RDB PC, P1020 RDB PD, P1020 RDB, P1021 RDB PC, P1024 RDB,
 	  and P1025 RDB boards
 
+config XTM330
+	bool "WatchGuard XTM330"
+	select PPC_I8259
+	select DEFAULT_UIMAGE
+	select SWIOTLB
+	help
+	  This option enables support for the P2020-based WatchGuard XTM330
+	  firewall appliance
+
 config PPC_P2020
 	bool "Freescale P2020"
 	default y if MPC85xx_DS || MPC85xx_RDB
