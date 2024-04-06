@@ -345,6 +345,11 @@ adder875-redboot)
     platformo="$object/fixed-head.o $object/redboot-8xx.o"
     binary=y
     ;;
+simpleboot-xtm330)
+    platformo="$object/fixed-head.o $object/simpleboot.o"
+    link_address='0x2000000'
+    binary=y
+    ;;
 simpleboot-*)
     platformo="$object/fixed-head.o $object/simpleboot.o"
     binary=y
